@@ -2,3 +2,5 @@
 target
 *.iml
 .\#*
+# Nix build result
+/result
