@@ -1,3 +1,15 @@
+use secp256k1;
+
+/// Things that can go wrong when constructing a `HashType` from bit flags.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum InvalidHashType {
+    /// Either or both of the two least-significant bits must be set.
+    UnknownSignedOutputs,
+    /// With v5 transactions, bits other than those specified for `HashType` must be 0. The `i32`
+    /// includes only the bits that are undefined by `HashType`.
+    ExtraBitsSet(i32),
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum ScriptNumError {
     NegativeZero,
@@ -40,18 +52,19 @@ pub enum ScriptError {
     UnsatisfiedLockTime,
 
     // BIP62
-    SigHashType,
-    SigDER,
+    SigHashType(InvalidHashType),
+    SigDER(secp256k1::Error),
     MinimalData,
     SigPushOnly,
-    // SigHighS,
-    SigNullDummy = 27,
+    SigHighS,
+    SigNullDummy,
     PubKeyType,
     CleanStack,
 
     // softfork safeness
     DiscourageUpgradableNOPs,
 
+    // extensions (these don’t exist in C++, and thus map to `UnknownError`)
     ReadError {
         expected_bytes: usize,
         available_bytes: usize,
