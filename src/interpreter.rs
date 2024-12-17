@@ -443,109 +443,96 @@ fn check_minimal_push(data: &ValType, opcode: PushValue) -> bool {
     true
 }
 
-pub fn eval_script(
-    stack: &mut Stack<Vec<u8>>,
+const BN_ZERO: ScriptNum = ScriptNum(0);
+const BN_ONE: ScriptNum = ScriptNum(1);
+const VCH_FALSE: ValType = Vec::new();
+const VCH_TRUE: [u8; 1] = [1];
+
+/// Run a single step of the interpreter.
+///
+/// This is useful for testing & debugging, as we can set up the exact state we want in order to
+/// trigger some behavior.
+pub fn eval_step(
+    pc: &mut &[u8],
     script: &Script,
     flags: VerificationFlags,
     checker: &dyn SignatureChecker,
+    stack: &mut Stack<Vec<u8>>,
+    altstack: &mut Stack<Vec<u8>>,
+    op_count: &mut u8,
+    vexec: &mut Stack<bool>,
 ) -> Result<bool, ScriptError> {
-    let bn_zero = ScriptNum(0);
-    let bn_one = ScriptNum(1);
-    let vch_false: ValType = vec![];
-    let vch_true: ValType = vec![1];
-
-    // There's a limit on how large scripts can be.
-    if script.0.len() > MAX_SCRIPT_SIZE {
-        return set_error(ScriptError::ScriptSize);
-    }
-
-    let mut pc = script.0;
-    let mut vch_push_value = vec![];
-
-    // We keep track of how many operations have executed so far to prevent
-    // expensive-to-verify scripts
-    let mut op_count: u8 = 0;
     let require_minimal = flags.contains(VerificationFlags::MinimalData);
 
-    // This keeps track of the conditional flags at each nesting level
-    // during execution. If we're in a branch of execution where *any*
-    // of these conditionals are false, we ignore opcodes unless those
-    // opcodes direct control flow (OP_IF, OP_ELSE, etc.).
-    let mut vexec: Stack<bool> = Stack(vec![]);
+    // Are we in an executing branch of the script?
+    let exec = vexec.iter().all(|value| *value);
 
-    let mut altstack: Stack<Vec<u8>> = Stack(vec![]);
+    //
+    // Read instruction
+    //
+    let mut vch_push_value = vec![];
+    let opcode = Script::get_op2(pc, &mut vch_push_value)?;
+    if vch_push_value.len() > MAX_SCRIPT_ELEMENT_SIZE {
+        return set_error(ScriptError::PushSize);
+    }
 
-    // Main execution loop
-    while !pc.is_empty() {
-        // Are we in an executing branch of the script?
-        let exec = vexec.iter().all(|value| *value);
-
-        //
-        // Read instruction
-        //
-        let opcode = Script::get_op2(&mut pc, &mut vch_push_value)?;
-        if vch_push_value.len() > MAX_SCRIPT_ELEMENT_SIZE {
-            return set_error(ScriptError::PushSize);
-        }
-
-        match opcode {
-            Opcode::PushValue(pv) => {
-                if exec {
-                    match pv {
-                        //
-                        // Push value
-                        //
-                        OP_1NEGATE | OP_1 | OP_2 | OP_3 | OP_4 | OP_5 | OP_6 | OP_7 | OP_8
-                        | OP_9 | OP_10 | OP_11 | OP_12 | OP_13 | OP_14 | OP_15 | OP_16 => {
-                            // ( -- value)
-                            let bn =
-                                ScriptNum(i64::from(u8::from(pv)) - i64::from(u8::from(OP_1) - 1));
-                            stack.push_back(bn.getvch());
-                            // The result of these opcodes should always be the minimal way to push the data
-                            // they push, so no need for a CheckMinimalPush here.
-                        }
-                        _ => {
-                            if pv <= OP_PUSHDATA4 {
-                                if require_minimal && !check_minimal_push(&vch_push_value, pv) {
-                                    return set_error(ScriptError::MinimalData);
-                                }
-                                stack.push_back(vch_push_value.clone());
-                            } else {
-                                return set_error(ScriptError::BadOpcode);
+    match opcode {
+        Opcode::PushValue(pv) => {
+            if exec {
+                match pv {
+                    //
+                    // Push value
+                    //
+                    OP_1NEGATE | OP_1 | OP_2 | OP_3 | OP_4 | OP_5 | OP_6 | OP_7 | OP_8 | OP_9
+                    | OP_10 | OP_11 | OP_12 | OP_13 | OP_14 | OP_15 | OP_16 => {
+                        // ( -- value)
+                        let bn = ScriptNum(i64::from(u8::from(pv)) - i64::from(u8::from(OP_1) - 1));
+                        stack.push_back(bn.getvch());
+                        // The result of these opcodes should always be the minimal way to push the data
+                        // they push, so no need for a CheckMinimalPush here.
+                    }
+                    _ => {
+                        if pv <= OP_PUSHDATA4 {
+                            if require_minimal && !check_minimal_push(&vch_push_value, pv) {
+                                return set_error(ScriptError::MinimalData);
                             }
+                            stack.push_back(vch_push_value.clone());
+                        } else {
+                            return set_error(ScriptError::BadOpcode);
                         }
                     }
                 }
             }
-            Opcode::Operation(op) => {
-                // Note how OP_RESERVED does not count towards the opcode limit.
-                op_count += 1;
-                if op_count > 201 {
-                    return set_error(ScriptError::OpCount);
-                }
+        }
+        Opcode::Operation(op) => {
+            // Note how OP_RESERVED does not count towards the opcode limit.
+            *op_count += 1;
+            if *op_count > 201 {
+                return set_error(ScriptError::OpCount);
+            }
 
-                if op == OP_CAT
-                    || op == OP_SUBSTR
-                    || op == OP_LEFT
-                    || op == OP_RIGHT
-                    || op == OP_INVERT
-                    || op == OP_AND
-                    || op == OP_OR
-                    || op == OP_XOR
-                    || op == OP_2MUL
-                    || op == OP_2DIV
-                    || op == OP_MUL
-                    || op == OP_DIV
-                    || op == OP_MOD
-                    || op == OP_LSHIFT
-                    || op == OP_RSHIFT
-                    || op == OP_CODESEPARATOR
-                {
-                    return set_error(ScriptError::DisabledOpcode); // Disabled opcodes.
-                }
+            if op == OP_CAT
+                || op == OP_SUBSTR
+                || op == OP_LEFT
+                || op == OP_RIGHT
+                || op == OP_INVERT
+                || op == OP_AND
+                || op == OP_OR
+                || op == OP_XOR
+                || op == OP_2MUL
+                || op == OP_2DIV
+                || op == OP_MUL
+                || op == OP_DIV
+                || op == OP_MOD
+                || op == OP_LSHIFT
+                || op == OP_RSHIFT
+                || op == OP_CODESEPARATOR
+            {
+                return set_error(ScriptError::DisabledOpcode); // Disabled opcodes.
+            }
 
-                if exec || (OP_IF <= op && op <= OP_ENDIF) {
-                    match op {
+            if exec || (OP_IF <= op && op <= OP_ENDIF) {
+                match op {
                         //
                         // Control
                         //
@@ -879,7 +866,7 @@ pub fn eval_script(
                                 //}
                                 stack.pop()?;
                                 stack.pop()?;
-                                stack.push_back(if equal { vch_true.clone() } else { vch_false.clone() });
+                                stack.push_back(if equal { VCH_TRUE.to_vec() } else { VCH_FALSE });
                                 if op == OP_EQUALVERIFY
                                 {
                                     if equal {
@@ -907,16 +894,16 @@ pub fn eval_script(
                             let mut bn = ScriptNum::new(stack.top(-1)?, require_minimal, None)
                                       .map_err(ScriptError::ScriptNumError)?;
                             match op {
-                                OP_1ADD => bn = bn + bn_one,
-                                OP_1SUB => bn = bn - bn_one,
+                                OP_1ADD => bn = bn + BN_ONE,
+                                OP_1SUB => bn = bn - BN_ONE,
                                 OP_NEGATE => bn = -bn,
                                 OP_ABS => {
-                                    if bn < bn_zero {
+                                    if bn < BN_ZERO {
                                         bn = -bn
                                     }
                                 }
-                                OP_NOT => bn = ScriptNum((bn == bn_zero).into()),
-                                OP_0NOTEQUAL => bn = ScriptNum((bn != bn_zero).into()),
+                                OP_NOT => bn = ScriptNum((bn == BN_ZERO).into()),
+                                OP_0NOTEQUAL => bn = ScriptNum((bn != BN_ZERO).into()),
                                 _ => panic!("invalid opcode"),
                             }
                             stack.pop()?;
@@ -951,8 +938,8 @@ pub fn eval_script(
                                 OP_SUB =>
                                     bn1 - bn2,
 
-                                OP_BOOLAND => ScriptNum((bn1 != bn_zero && bn2 != bn_zero).into()),
-                                OP_BOOLOR => ScriptNum((bn1 != bn_zero || bn2 != bn_zero).into()),
+                                OP_BOOLAND => ScriptNum((bn1 != BN_ZERO && bn2 != BN_ZERO).into()),
+                                OP_BOOLOR => ScriptNum((bn1 != BN_ZERO || bn2 != BN_ZERO).into()),
                                 OP_NUMEQUAL => ScriptNum((bn1 == bn2).into()),
                                 OP_NUMEQUALVERIFY => ScriptNum((bn1 == bn2).into()),
                                 OP_NUMNOTEQUAL => ScriptNum((bn1 != bn2).into()),
@@ -993,9 +980,9 @@ pub fn eval_script(
                             stack.pop()?;
                             stack.pop()?;
                             stack.push_back(if value {
-                                vch_true.clone()
+                                VCH_TRUE.to_vec()
                             } else {
-                                vch_false.clone()
+                                VCH_FALSE
                             })
                         }
 
@@ -1050,9 +1037,9 @@ pub fn eval_script(
                             stack.pop()?;
                             stack.pop()?;
                             stack.push_back(if success {
-                                vch_true.clone()
+                                VCH_TRUE.to_vec()
                             } else {
-                                vch_false.clone()
+                                VCH_FALSE
                             });
                             if op == OP_CHECKSIGVERIFY {
                                 if success {
@@ -1082,8 +1069,8 @@ pub fn eval_script(
                             if keys_count > 20 {
                                 return set_error(ScriptError::PubKeyCount);
                             };
-                            op_count += keys_count;
-                            if op_count > 201 {
+                            *op_count += keys_count;
+                            if *op_count > 201 {
                                 return set_error(ScriptError::OpCount);
                             };
                             i += 1;
@@ -1165,9 +1152,9 @@ pub fn eval_script(
                             stack.pop()?;
 
                             stack.push_back(if success {
-                                vch_true.clone()
+                                VCH_TRUE.to_vec()
                             } else {
-                                vch_false.clone()
+                                VCH_FALSE
                             });
 
                             if op == OP_CHECKMULTISIGVERIFY {
@@ -1183,13 +1170,56 @@ pub fn eval_script(
                             return set_error(ScriptError::BadOpcode);
                         }
                     }
-                }
             }
         }
+    }
 
-        // Size limits
-        if stack.size() + altstack.size() > 1000 {
-            return set_error(ScriptError::StackSize);
+    // Size limits
+    if stack.size() + altstack.size() > 1000 {
+        set_error(ScriptError::StackSize)
+    } else {
+        Ok(true)
+    }
+}
+
+pub fn eval_script(
+    stack: &mut Stack<Vec<u8>>,
+    script: &Script,
+    flags: VerificationFlags,
+    checker: &dyn SignatureChecker,
+) -> Result<bool, ScriptError> {
+    // There's a limit on how large scripts can be.
+    if script.0.len() > MAX_SCRIPT_SIZE {
+        return set_error(ScriptError::ScriptSize);
+    }
+
+    let mut pc = script.0;
+
+    // We keep track of how many operations have executed so far to prevent
+    // expensive-to-verify scripts
+    let mut op_count: u8 = 0;
+
+    // This keeps track of the conditional flags at each nesting level
+    // during execution. If we're in a branch of execution where *any*
+    // of these conditionals are false, we ignore opcodes unless those
+    // opcodes direct control flow (OP_IF, OP_ELSE, etc.).
+    let mut vexec: Stack<bool> = Stack(vec![]);
+
+    let mut altstack: Stack<Vec<u8>> = Stack(vec![]);
+
+    // Main execution loop
+    while !pc.is_empty() {
+        if !eval_step(
+            &mut pc,
+            script,
+            flags,
+            checker,
+            stack,
+            &mut altstack,
+            &mut op_count,
+            &mut vexec,
+        )? {
+            return Ok(false);
         }
     }
 
