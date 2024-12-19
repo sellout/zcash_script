@@ -479,9 +479,9 @@ pub fn eval_step(
     pc: &mut &[u8],
     script: &Script,
     flags: VerificationFlags,
-    checker: &dyn SignatureChecker,
+    checker: &impl SignatureChecker,
     state: &mut State,
-) -> Result<bool, ScriptError> {
+) -> Result<(), ScriptError> {
     let stack = &mut state.stack;
     let op_count = &mut state.op_count;
     let require_minimal = flags.contains(VerificationFlags::MinimalData);
@@ -1052,8 +1052,8 @@ pub fn eval_step(
                             let vch_pub_key = stack.top(-1)?.clone();
 
                             if !check_signature_encoding(&vch_sig, flags)? {
-                                //serror is set
-                                return Ok(false);
+                                // serror is set
+                                return set_error(ScriptError::UnknownError);
                             }
                             check_pub_key_encoding(&vch_pub_key, flags)?;
                             let success = checker.check_sig(&vch_sig, &vch_pub_key, script);
@@ -1128,7 +1128,7 @@ pub fn eval_step(
                                 // See the script_(in)valid tests for details.
                                 if !check_signature_encoding(vch_sig, flags)? {
                                     // serror is set
-                                    return Ok(false);
+                                    return set_error(ScriptError::UnknownError);
                                 };
                                 check_pub_key_encoding(vch_pub_key, flags)?;
 
@@ -1202,16 +1202,23 @@ pub fn eval_step(
     if stack.size() + altstack.size() > 1000 {
         set_error(ScriptError::StackSize)
     } else {
-        Ok(true)
+        Ok(())
     }
 }
 
-pub fn eval_script(
+pub fn eval_step2<'a>(
+    flags: VerificationFlags,
+    checker: &'a impl SignatureChecker,
+) -> impl Fn(&mut &[u8], &Script, &mut State, &mut ()) -> Result<(), ScriptError> + 'a {
+    move |pc, script: &Script, state, _payload| eval_step(pc, script, flags, checker, state)
+}
+
+pub fn eval_script<T>(
     stack: &mut Stack<Vec<u8>>,
     script: &Script,
-    flags: VerificationFlags,
-    checker: &dyn SignatureChecker,
-) -> Result<bool, ScriptError> {
+    payload: &mut T,
+    eval_step: &impl Fn(&mut &[u8], &Script, &mut State, &mut T) -> Result<(), ScriptError>,
+) -> Result<(), ScriptError> {
     // There's a limit on how large scripts can be.
     if script.0.len() > MAX_SCRIPT_SIZE {
         return set_error(ScriptError::ScriptSize);
@@ -1223,22 +1230,14 @@ pub fn eval_script(
 
     // Main execution loop
     while !pc.is_empty() {
-        if !eval_step(
-            &mut pc,
-            script,
-            flags,
-            checker,
-            &mut state,
-        )? {
-            return Ok(false);
-        }
+        eval_step(&mut pc, script, &mut state, payload)?;
     }
 
     if !state.vexec.empty() {
         return set_error(ScriptError::UnbalancedConditional);
     }
 
-    set_success(true)
+    Ok(())
 }
 
 /// All signature hashes are 32 bytes, since they are either:
@@ -1309,11 +1308,12 @@ impl SignatureChecker for CallbackTransactionSignatureChecker<'_> {
     }
 }
 
-pub fn verify_script(
+pub fn verify_script<T>(
     script_sig: &Script,
     script_pub_key: &Script,
     flags: VerificationFlags,
-    checker: &dyn SignatureChecker,
+    payload: &mut T,
+    stepper: &impl Fn(&mut &[u8], &Script, &mut State, &mut T) -> Result<(), ScriptError>,
 ) -> Result<(), ScriptError> {
     if flags.contains(VerificationFlags::SigPushOnly) && !script_sig.is_push_only() {
         return set_error(ScriptError::SigPushOnly);
@@ -1321,17 +1321,11 @@ pub fn verify_script(
 
     let mut stack = Stack(Vec::new());
     let mut stack_copy = Stack(Vec::new());
-    if !eval_script(&mut stack, script_sig, flags, checker)? {
-        // serror is set
-        return set_error(ScriptError::UnknownError);
-    }
+    eval_script(&mut stack, script_sig, payload, stepper)?;
     if flags.contains(VerificationFlags::P2SH) {
         stack_copy = stack.clone()
     }
-    if !eval_script(&mut stack, script_pub_key, flags, checker)? {
-        // serror is set
-        return set_error(ScriptError::UnknownError);
-    }
+    eval_script(&mut stack, script_pub_key, payload, stepper)?;
     if stack.empty() {
         return set_error(ScriptError::EvalFalse);
     }
@@ -1358,10 +1352,7 @@ pub fn verify_script(
         let pub_key_2 = Script(pub_key_serialized.as_slice());
         stack.pop()?;
 
-        if !eval_script(&mut stack, &pub_key_2, flags, checker)? {
-            // serror is set
-            return set_error(ScriptError::UnknownError);
-        }
+        eval_script(&mut stack, &pub_key_2, payload, stepper)?;
         if stack.empty() {
             return set_error(ScriptError::EvalFalse);
         }
