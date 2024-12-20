@@ -53,19 +53,65 @@ pub enum PushValue {
 
 use PushValue::*;
 
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Operation {
+    Control(Control),
+    Disabled(Disabled),
+    Normal(Normal),
+}
+
 enum_from_primitive! {
+/// Control operations are evaluated regardless of whether the current branch is active.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[repr(u8)]
-pub enum Operation {
-    // control
-    OP_NOP = 0x61,
-    OP_VER = 0x62,
+pub enum Control {
     OP_IF = 0x63,
     OP_NOTIF = 0x64,
     OP_VERIF = 0x65,
     OP_VERNOTIF = 0x66,
     OP_ELSE = 0x67,
     OP_ENDIF = 0x68,
+}
+}
+
+enum_from_primitive! {
+/// Disabled operations fail whenever they appear in a script, regardless of whether they are on an
+/// active branch.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[repr(u8)]
+pub enum Disabled {
+    // splice ops
+    OP_CAT = 0x7e,
+    OP_SUBSTR = 0x7f,
+    OP_LEFT = 0x80,
+    OP_RIGHT = 0x81,
+        // bit logic
+    OP_INVERT = 0x83,
+    OP_AND = 0x84,
+    OP_OR = 0x85,
+    OP_XOR = 0x86,
+    // numeric
+    OP_2MUL = 0x8d,
+    OP_2DIV = 0x8e,
+    OP_MUL = 0x95,
+    OP_DIV = 0x96,
+    OP_MOD = 0x97,
+    OP_LSHIFT = 0x98,
+    OP_RSHIFT = 0x99,
+
+    //crypto
+    OP_CODESEPARATOR = 0xab,
+}
+}
+
+enum_from_primitive! {
+/// Normal operations are only executed when they are on an active branch.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[repr(u8)]
+pub enum Normal {
+    // control
+    OP_NOP = 0x61,
+    OP_VER = 0x62,
     OP_VERIFY = 0x69,
     OP_RETURN = 0x6a,
 
@@ -91,17 +137,9 @@ pub enum Operation {
     OP_TUCK = 0x7d,
 
     // splice ops
-    OP_CAT = 0x7e,
-    OP_SUBSTR = 0x7f,
-    OP_LEFT = 0x80,
-    OP_RIGHT = 0x81,
     OP_SIZE = 0x82,
 
     // bit logic
-    OP_INVERT = 0x83,
-    OP_AND = 0x84,
-    OP_OR = 0x85,
-    OP_XOR = 0x86,
     OP_EQUAL = 0x87,
     OP_EQUALVERIFY = 0x88,
     OP_RESERVED1 = 0x89,
@@ -110,8 +148,6 @@ pub enum Operation {
     // numeric
     OP_1ADD = 0x8b,
     OP_1SUB = 0x8c,
-    OP_2MUL = 0x8d,
-    OP_2DIV = 0x8e,
     OP_NEGATE = 0x8f,
     OP_ABS = 0x90,
     OP_NOT = 0x91,
@@ -119,11 +155,6 @@ pub enum Operation {
 
     OP_ADD = 0x93,
     OP_SUB = 0x94,
-    OP_MUL = 0x95,
-    OP_DIV = 0x96,
-    OP_MOD = 0x97,
-    OP_LSHIFT = 0x98,
-    OP_RSHIFT = 0x99,
 
     OP_BOOLAND = 0x9a,
     OP_BOOLOR = 0x9b,
@@ -145,7 +176,6 @@ pub enum Operation {
     OP_SHA256 = 0xa8,
     OP_HASH160 = 0xa9,
     OP_HASH256 = 0xaa,
-    OP_CODESEPARATOR = 0xab,
     OP_CHECKSIG = 0xac,
     OP_CHECKSIGVERIFY = 0xad,
     OP_CHECKMULTISIG = 0xae,
@@ -162,14 +192,12 @@ pub enum Operation {
     OP_NOP8 = 0xb7,
     OP_NOP9 = 0xb8,
     OP_NOP10 = 0xb9,
-
-    OP_INVALIDOPCODE = 0xff,
 }
 }
 
-use Operation::*;
+use Normal::*;
 
-pub const OP_CHECKLOCKTIMEVERIFY: Operation = OP_NOP2;
+pub const OP_CHECKLOCKTIMEVERIFY: Normal = OP_NOP2;
 
 impl From<Opcode> for u8 {
     fn from(value: Opcode) -> Self {
@@ -180,12 +208,34 @@ impl From<Opcode> for u8 {
     }
 }
 
-impl From<u8> for Opcode {
-    fn from(value: u8) -> Self {
-        Operation::from_u8(value).map_or(
-            PushValue::try_from(value)
-                .map_or(Opcode::Operation(OP_INVALIDOPCODE), Opcode::PushValue),
-            Opcode::Operation,
+impl TryFrom<u8> for Opcode {
+    type Error = ();
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        Operation::try_from(value).map_or(PushValue::try_from(value).map(Opcode::PushValue), |op| {
+            Ok(Opcode::Operation(op))
+        })
+    }
+}
+
+impl From<Operation> for u8 {
+    fn from(value: Operation) -> Self {
+        match value {
+            Operation::Control(op) => op.into(),
+            Operation::Disabled(op) => op.into(),
+            Operation::Normal(op) => op.into(),
+        }
+    }
+}
+
+impl TryFrom<u8> for Operation {
+    type Error = ();
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        Control::from_u8(value).map_or(
+            Disabled::from_u8(value).map_or(
+                Normal::from_u8(value).map_or(Err(()), |op| Ok(Operation::Normal(op))),
+                |op| Ok(Operation::Disabled(op)),
+            ),
+            |op| Ok(Operation::Control(op)),
         )
     }
 }
@@ -257,8 +307,21 @@ impl TryFrom<u8> for PushValue {
     }
 }
 
-impl From<Operation> for u8 {
-    fn from(value: Operation) -> Self {
+impl From<Normal> for u8 {
+    fn from(value: Normal) -> Self {
+        // This is how you get the discriminant, but using `as` everywhere is too much code smell
+        value as u8
+    }
+}
+
+impl From<Control> for u8 {
+    fn from(value: Control) -> Self {
+        // This is how you get the discriminant, but using `as` everywhere is too much code smell
+        value as u8
+    }
+}
+impl From<Disabled> for u8 {
+    fn from(value: Disabled) -> Self {
         // This is how you get the discriminant, but using `as` everywhere is too much code smell
         value as u8
     }
@@ -440,16 +503,27 @@ impl Neg for ScriptNum {
     }
 }
 
+/// Sorry, I can’t help myself.
+fn traverse_opt_res<T, U, E>(
+    opt: Option<T>,
+    fun: impl FnOnce(T) -> Result<U, E>,
+) -> Result<Option<U>, E> {
+    opt.map_or(Ok(None), |x| fun(x).map(Some))
+}
+
 /** Serialized script, used inside transaction inputs and outputs */
 #[derive(Clone, Debug)]
 pub struct Script<'a>(pub &'a [u8]);
 
 impl Script<'_> {
-    pub fn get_op(script: &mut &[u8]) -> Result<Opcode, ScriptError> {
+    pub fn get_op(script: &mut &[u8]) -> Result<Option<Opcode>, ScriptError> {
         Self::get_op2(script, &mut vec![])
     }
 
-    pub fn get_op2(script: &mut &[u8], buffer: &mut Vec<u8>) -> Result<Opcode, ScriptError> {
+    pub fn get_op2(
+        script: &mut &[u8],
+        buffer: &mut Vec<u8>,
+    ) -> Result<Option<Opcode>, ScriptError> {
         if script.is_empty() {
             panic!("attempting to parse an opcode from an empty script");
         }
@@ -457,10 +531,10 @@ impl Script<'_> {
         // Empty the provided buffer, if any
         buffer.truncate(0);
 
-        let leading_byte = Opcode::from(script[0]);
+        let leading_byte = Opcode::try_from(script[0]).ok();
         *script = &script[1..];
 
-        Ok(match leading_byte {
+        traverse_opt_res(leading_byte, |lb| match lb {
             Opcode::PushValue(pv) => match pv {
                 OP_PUSHDATA1 | OP_PUSHDATA2 | OP_PUSHDATA4 => {
                     let read_le = |script: &mut &[u8], needed_bytes: usize| {
@@ -497,11 +571,11 @@ impl Script<'_> {
                     buffer.extend(&script[0..size]);
                     *script = &script[size..];
 
-                    leading_byte
+                    Ok(lb)
                 }
                 // OP_0/OP_FALSE doesn't actually push a constant 0 onto the stack but
                 // pushes an empty array. (Thus we leave the buffer truncated to 0 length)
-                OP_0 => leading_byte,
+                OP_0 => Ok(lb),
                 PushdataBytelength(size_byte) => {
                     let size = size_byte.into();
 
@@ -515,11 +589,11 @@ impl Script<'_> {
                     buffer.extend(&script[0..size]);
                     *script = &script[size..];
 
-                    leading_byte
+                    Ok(lb)
                 }
-                _ => leading_byte,
+                _ => Ok(lb),
             },
-            _ => leading_byte,
+            _ => Ok(lb),
         })
     }
 
@@ -540,18 +614,18 @@ impl Script<'_> {
     pub fn get_sig_op_count(&self, accurate: bool) -> u32 {
         let mut n = 0;
         let mut pc = self.0;
-        let mut last_opcode = Opcode::Operation(OP_INVALIDOPCODE);
+        let mut last_opcode = None;
         while !pc.is_empty() {
             let opcode = match Self::get_op(&mut pc) {
                 Ok(o) => o,
                 Err(_) => break,
             };
-            if let Opcode::Operation(op) = opcode {
+            if let Some(Opcode::Operation(Operation::Normal(op))) = opcode {
                 if op == OP_CHECKSIG || op == OP_CHECKSIGVERIFY {
                     n += 1;
                 } else if op == OP_CHECKMULTISIG || op == OP_CHECKMULTISIGVERIFY {
                     match last_opcode {
-                        Opcode::PushValue(pv) => {
+                        Some(Opcode::PushValue(pv)) => {
                             if accurate && pv >= OP_1 && pv <= OP_16 {
                                 n += Self::decode_op_n(pv);
                             } else {
@@ -579,7 +653,7 @@ impl Script<'_> {
     pub fn is_push_only(&self) -> bool {
         let mut pc = self.0;
         while !pc.is_empty() {
-            if let Ok(Opcode::PushValue(_)) = Self::get_op(&mut pc) {
+            if let Ok(Some(Opcode::PushValue(_))) = Self::get_op(&mut pc) {
             } else {
                 return false;
             }
