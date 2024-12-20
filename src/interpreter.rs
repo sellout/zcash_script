@@ -1,4 +1,3 @@
-use std::mem::swap;
 use std::slice::Iter;
 
 use ripemd::Ripemd160;
@@ -182,7 +181,7 @@ pub struct Stack<T>(Vec<T>);
 
 /// Wraps a Vec (or whatever underlying implementation we choose in a way that matches the C++ impl
 /// and provides us some decent chaining)
-impl<T> Stack<T> {
+impl<T: Clone> Stack<T> {
     fn reverse_index(&self, i: isize) -> Result<usize, ScriptError> {
         usize::try_from(-i)
             .map(|a| self.0.len() - a)
@@ -223,6 +222,17 @@ impl<T> Stack<T> {
 
     pub fn back(&mut self) -> Result<&mut T, ScriptError> {
         self.0.last_mut().ok_or(ScriptError::InvalidStackOperation)
+    }
+
+    pub fn last(&self) -> Result<&T, ScriptError> {
+        self.0.last().ok_or(ScriptError::InvalidStackOperation)
+    }
+
+    pub fn split_last(&self) -> Result<(&T, Stack<T>), ScriptError> {
+        self.0
+            .split_last()
+            .ok_or(ScriptError::InvalidStackOperation)
+            .map(|(last, rem)| (last, Stack(rem.to_vec())))
     }
 
     pub fn erase(&mut self, start: usize, end: Option<usize>) {
@@ -448,8 +458,9 @@ const BN_ONE: ScriptNum = ScriptNum(1);
 const VCH_FALSE: ValType = Vec::new();
 const VCH_TRUE: [u8; 1] = [1];
 
-pub struct State<'a> {
-    stack: &'a mut Stack<Vec<u8>>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct State {
+    stack: Stack<Vec<u8>>,
     altstack: Stack<Vec<u8>>,
     // We keep track of how many operations have executed so far to prevent expensive-to-verify
     // scripts
@@ -460,8 +471,8 @@ pub struct State<'a> {
     vexec: Stack<bool>,
 }
 
-impl<'a> State<'a> {
-    pub fn initial(stack: &'a mut Stack<Vec<u8>>) -> Self {
+impl State {
+    pub fn initial(stack: Stack<Vec<u8>>) -> Self {
         State {
             stack,
             altstack: Stack(vec![]),
@@ -1214,11 +1225,11 @@ pub fn eval_step2<'a>(
 }
 
 pub fn eval_script<T>(
-    stack: &mut Stack<Vec<u8>>,
+    stack: Stack<Vec<u8>>,
     script: &Script,
     payload: &mut T,
     eval_step: &impl Fn(&mut &[u8], &Script, &mut State, &mut T) -> Result<(), ScriptError>,
-) -> Result<(), ScriptError> {
+) -> Result<Stack<Vec<u8>>, ScriptError> {
     // There's a limit on how large scripts can be.
     if script.0.len() > MAX_SCRIPT_SIZE {
         return set_error(ScriptError::ScriptSize);
@@ -1229,6 +1240,10 @@ pub fn eval_script<T>(
     let mut state = State::initial(stack);
 
     // Main execution loop
+    //
+    // TODO: With a streaming lexer, this could be
+    //
+    // lex(script).fold(eval_step, State::initial(stack))
     while !pc.is_empty() {
         eval_step(&mut pc, script, &mut state, payload)?;
     }
@@ -1237,7 +1252,7 @@ pub fn eval_script<T>(
         return set_error(ScriptError::UnbalancedConditional);
     }
 
-    Ok(())
+    Ok(state.stack)
 }
 
 /// All signature hashes are 32 bytes, since they are either:
@@ -1319,47 +1334,48 @@ pub fn verify_script<T>(
         return set_error(ScriptError::SigPushOnly);
     }
 
-    let mut stack = Stack(Vec::new());
-    let mut stack_copy = Stack(Vec::new());
-    eval_script(&mut stack, script_sig, payload, stepper)?;
-    if flags.contains(VerificationFlags::P2SH) {
-        stack_copy = stack.clone()
-    }
-    eval_script(&mut stack, script_pub_key, payload, stepper)?;
-    if stack.empty() {
+    let data_stack = eval_script(Stack(Vec::new()), script_sig, payload, stepper)?;
+    let pub_key_stack = eval_script(data_stack.clone(), script_pub_key, payload, stepper)?;
+    if pub_key_stack.empty() {
         return set_error(ScriptError::EvalFalse);
     }
-    if !cast_to_bool(stack.back()?) {
+    if !cast_to_bool(pub_key_stack.last()?) {
         return set_error(ScriptError::EvalFalse);
     }
 
     // Additional validation for spend-to-script-hash transactions:
-    if flags.contains(VerificationFlags::P2SH) && script_pub_key.is_pay_to_script_hash() {
+    let result_stack = if flags.contains(VerificationFlags::P2SH)
+        && script_pub_key.is_pay_to_script_hash()
+    {
         // script_sig must be literals-only or validation fails
         if !script_sig.is_push_only() {
             return set_error(ScriptError::SigPushOnly);
         };
 
-        // Restore stack.
-        swap(&mut stack, &mut stack_copy);
-
         // stack cannot be empty here, because if it was the
         // P2SH  HASH <> EQUAL  scriptPubKey would be evaluated with
         // an empty stack and the `eval_script` above would return false.
-        assert!(!stack.empty());
+        assert!(!data_stack.empty());
 
-        let pub_key_serialized = stack.back()?.clone();
-        let pub_key_2 = Script(pub_key_serialized.as_slice());
-        stack.pop()?;
+        data_stack
+            .split_last()
+            .map_err(|_| ScriptError::InvalidStackOperation)
+            .and_then(|(pub_key_serialized, remaining_stack)| {
+                let pub_key_2 = Script(pub_key_serialized.as_slice());
 
-        eval_script(&mut stack, &pub_key_2, payload, stepper)?;
-        if stack.empty() {
-            return set_error(ScriptError::EvalFalse);
-        }
-        if !cast_to_bool(stack.back()?) {
-            return set_error(ScriptError::EvalFalse);
-        }
-    }
+                eval_script(remaining_stack, &pub_key_2, payload, stepper).and_then(|p2sh_stack| {
+                    if p2sh_stack.empty() {
+                        return set_error(ScriptError::EvalFalse);
+                    }
+                    if !cast_to_bool(p2sh_stack.last()?) {
+                        return set_error(ScriptError::EvalFalse);
+                    }
+                    Ok(p2sh_stack)
+                })
+            })?
+    } else {
+        pub_key_stack
+    };
 
     // The CLEANSTACK check is only performed after potential P2SH evaluation,
     // as the non-P2SH evaluation of a P2SH script will obviously not result in
@@ -1368,7 +1384,7 @@ pub fn verify_script<T>(
         // Disallow CLEANSTACK without P2SH, as otherwise a switch CLEANSTACK->P2SH+CLEANSTACK
         // would be possible, which is not a softfork (and P2SH should be one).
         assert!(flags.contains(VerificationFlags::P2SH));
-        if stack.size() != 1 {
+        if result_stack.size() != 1 {
             return set_error(ScriptError::CleanStack);
         }
     };

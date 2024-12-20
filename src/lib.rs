@@ -171,6 +171,46 @@ pub fn normalize_error(err: Error) -> Error {
     }
 }
 
+/// This compares two `ZcashScript` implementations in a deep way – checking the entire `State` step
+/// by step. Note that this has some tradeoffs: one is performance. Another is that it doesn’t run
+/// the entire codepath of either implementation. The setup/wrapup code is specific to this
+/// definition, but any differences there should be caught very easily by other testing mechanisms
+/// (like `check_verify_callback`).
+///
+/// This returns a very debuggable result.
+///
+/// First, it returns a `NonEmpty` of every state in the execution, where the two implementations
+/// aligned. Its `head` contains the initial state and its `tail` has a 1:1 correspondence to the
+/// opcodes (not to the bytes). It also returns a `Result`. An `Ok` does _not_ indicate that the
+/// script passed, but rather that both implementations behaved identically. If they did, the `Ok`
+/// contains another `Result` that indicates the final result of the script. If they didn’t behave
+/// identically, the `Err` contains a pair of `Result`s, one for each implementation. If the
+/// diverging step succeeded for an implementation, its `Ok` will contain the resulting state from
+/// that step. If it failed, it wil contain the `ScriptError`.
+// pub fn deep_check_verify<T: ZcashScript, U: ZcashScript>(
+//         sighash: SighashCalculator,
+//         lock_time: i64,
+//         is_final: bool,
+//         script_pub_key: &[u8],
+//         script_sig: &[u8],
+//         flags: VerificationFlags,
+// ) -> (NonEmpty<State>,
+//       Result<Result<(), ScriptError>, (Result<State, ScriptError>, Result<State, ScriptError>)>) {
+//     let lock_time_num = ScriptNum(lock_time);
+//     verify_script(
+//         &Script(script_sig),
+//         &Script(script_pub_key),
+//         flags,
+//         &CallbackTransactionSignatureChecker {
+//             sighash,
+//             lock_time: &lock_time_num,
+//             is_final,
+//         },
+//     )
+//         .map_err(|e| Error::Ok(Some(e)))
+
+// }
+
 /// A tag to indicate that both the C++ and Rust implementations of zcash_script should be used,
 /// with their results compared.
 pub enum CxxRustComparisonInterpreter {}
