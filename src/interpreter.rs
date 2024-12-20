@@ -174,22 +174,22 @@ pub struct Stack<T>(Vec<T>);
 /// Wraps a Vec (or whatever underlying implementation we choose in a way that matches the C++ impl
 /// and provides us some decent chaining)
 impl<T: Clone> Stack<T> {
-    fn reverse_index(&self, i: isize) -> Result<usize, ScriptError> {
-        usize::try_from(-i)
-            .map(|a| self.0.len() - a)
-            .map_err(|_| ScriptError::InvalidStackOperation)
+    fn rindex(&self, i: usize) -> Result<usize, ScriptError> {
+        let len = self.0.len();
+        if i < len {
+            Ok(len - i - 1)
+        } else {
+            Err(ScriptError::InvalidStackOperation)
+        }
     }
 
-    pub fn top(&self, i: isize) -> Result<&T, ScriptError> {
-        let idx = self.reverse_index(i)?;
+    pub fn rget(&self, i: usize) -> Result<&T, ScriptError> {
+        let idx = self.rindex(i)?;
         self.0.get(idx).ok_or(ScriptError::InvalidStackOperation)
     }
 
-    pub fn swap(&mut self, a: isize, b: isize) -> Result<(), ScriptError> {
-        let au = self.reverse_index(a)?;
-        let bu = self.reverse_index(b)?;
-        self.0.swap(au, bu);
-        Ok(())
+    pub fn swap(&mut self, a: usize, b: usize) -> () {
+        self.0.swap(a, b)
     }
 
     pub fn pop(&mut self) -> Result<T, ScriptError> {
@@ -590,7 +590,7 @@ pub fn eval_step(
                                 // to 5-byte bignums, which are good until 2**39-1, well
                                 // beyond the 2**32-1 limit of the `lock_time` field itself.
                                 let lock_time =
-                                    ScriptNum::new(stack.top(-1)?, require_minimal, Some(5))
+                                    ScriptNum::new(stack.rget(0)?, require_minimal, Some(5))
                                       .map_err(ScriptError::ScriptNumError)?;
 
                                 // In the rare event that the argument may be < 0 due to
@@ -625,7 +625,7 @@ pub fn eval_step(
                                 if stack.len() < 1 {
                                     return Err(ScriptError::UnbalancedConditional);
                                 }
-                                let vch: &ValType = stack.top(-1)?;
+                                let vch: &ValType = stack.rget(0)?;
                                 value = cast_to_bool(vch);
                                 if op == OP_NOTIF {
                                     value = !value
@@ -655,7 +655,7 @@ pub fn eval_step(
                             if stack.len() < 1 {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
-                            let value = cast_to_bool(stack.top(-1)?);
+                            let value = cast_to_bool(stack.rget(0)?);
                             if value {
                                 stack.pop()?;
                             } else {
@@ -672,7 +672,7 @@ pub fn eval_step(
                             if stack.is_empty() {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
-                            altstack.push(stack.top(-1)?.clone());
+                            altstack.push(stack.rget(0)?.clone());
                             stack.pop()?;
                         }
 
@@ -680,7 +680,7 @@ pub fn eval_step(
                             if altstack.is_empty() {
                                 return Err(ScriptError::InvalidAltstackOperation);
                             }
-                            stack.push(altstack.top(-1)?.clone());
+                            stack.push(altstack.rget(0)?.clone());
                             altstack.pop()?;
                         }
 
@@ -698,8 +698,8 @@ pub fn eval_step(
                             if stack.len() < 2 {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
-                            let vch1 = stack.top(-2)?.clone();
-                            let vch2 = stack.top(-1)?.clone();
+                            let vch1 = stack.rget(1)?.clone();
+                            let vch2 = stack.rget(0)?.clone();
                             stack.push(vch1);
                             stack.push(vch2);
                         }
@@ -709,9 +709,9 @@ pub fn eval_step(
                             if stack.len() < 3 {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
-                            let vch1 = stack.top(-3)?.clone();
-                            let vch2 = stack.top(-2)?.clone();
-                            let vch3 = stack.top(-1)?.clone();
+                            let vch1 = stack.rget(2)?.clone();
+                            let vch2 = stack.rget(1)?.clone();
+                            let vch3 = stack.rget(0)?.clone();
                             stack.push(vch1);
                             stack.push(vch2);
                             stack.push(vch3);
@@ -722,8 +722,8 @@ pub fn eval_step(
                             if stack.len() < 4 {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
-                            let vch1 = stack.top(-4)?.clone();
-                            let vch2 = stack.top(-3)?.clone();
+                            let vch1 = stack.rget(3)?.clone();
+                            let vch2 = stack.rget(2)?.clone();
                             stack.push(vch1);
                             stack.push(vch2);
                         }
@@ -733,9 +733,9 @@ pub fn eval_step(
                             if stack.len() < 6 {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
-                            let vch1 = stack.top(-6)?.clone();
-                            let vch2 = stack.top(-5)?.clone();
-                            stack.erase(stack.len() - 6, Some(stack.len() - 4));
+                            let vch1 = stack.rget(5)?.clone();
+                            let vch2 = stack.rget(4)?.clone();
+                            stack.erase(stack.rindex(5)?, Some(stack.rindex(3)?));
                             stack.push(vch1);
                             stack.push(vch2);
                         }
@@ -745,8 +745,8 @@ pub fn eval_step(
                             if stack.len() < 4 {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
-                            stack.swap(-4, -2)?;
-                            stack.swap(-3, -1)?;
+                            stack.swap(stack.rindex(3)?, stack.rindex(1)?);
+                            stack.swap(stack.rindex(2)?, stack.rindex(0)?);
                         }
 
                         OP_IFDUP => {
@@ -754,7 +754,7 @@ pub fn eval_step(
                             if stack.len() < 1 {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
-                            let vch = stack.top(-1)?;
+                            let vch = stack.rget(0)?;
                             if cast_to_bool(vch) {
                                 stack.push(vch.to_vec())
                             }
@@ -791,7 +791,7 @@ pub fn eval_step(
                             if stack.len() < 2 {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
-                            stack.erase(stack.len() - 2, None);
+                            stack.erase(stack.rindex(1)?, None);
                         }
 
                         OP_OVER => {
@@ -799,7 +799,7 @@ pub fn eval_step(
                             if stack.len() < 2 {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
-                            let vch = stack.top(-2)?;
+                            let vch = stack.rget(1)?;
                             stack.push(vch.clone());
                         }
 
@@ -811,18 +811,16 @@ pub fn eval_step(
                                 return Err(ScriptError::InvalidStackOperation);
                             }
                             let n =
-                                u16::try_from(ScriptNum::new(stack.top(-1)?, require_minimal, None)
+                                u16::try_from(ScriptNum::new(stack.rget(0)?, require_minimal, None)
                                       .map_err(ScriptError::ScriptNumError)?.getint())
                                 .map_err(|_| ScriptError::InvalidStackOperation)?;
                             stack.pop()?;
                             if usize::from(n) >= stack.len() {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
-                            let vch: ValType =
-                                stack.top(-isize::try_from(n).map_err(|_| ScriptError::InvalidStackOperation)? - 1)?
-                                .clone();
+                            let vch: ValType = stack.rget(n.into())?.clone();
                             if op == OP_ROLL {
-                                stack.erase(stack.len() - usize::from(n) - 1, None);
+                                stack.erase(stack.rindex(n.into())?, None);
                             }
                             stack.push(vch)
                         }
@@ -834,8 +832,8 @@ pub fn eval_step(
                             if stack.len() < 3 {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
-                            stack.swap(-3, -2)?;
-                            stack.swap(-2, -1)?;
+                            stack.swap(stack.rindex(2)?, stack.rindex(1)?);
+                            stack.swap(stack.rindex(1)?, stack.rindex(0)?);
                         }
 
                         OP_SWAP => {
@@ -843,7 +841,7 @@ pub fn eval_step(
                             if stack.len() < 2 {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
-                            stack.swap(-2, -1)?;
+                            stack.swap(stack.rindex(1)?, stack.rindex(0)?);
                         }
 
                         OP_TUCK => {
@@ -851,8 +849,8 @@ pub fn eval_step(
                             if stack.len() < 2 {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
-                            let vch = stack.top(-1)?.clone();
-                            stack.insert(stack.len() - 2, vch)
+                            let vch = stack.rget(0)?.clone();
+                            stack.insert(stack.rindex(1)?, vch)
                         }
 
 
@@ -862,7 +860,7 @@ pub fn eval_step(
                                 return Err(ScriptError::InvalidStackOperation);
                             }
                             let bn =
-                                ScriptNum(stack.top(-1)?.len().try_into().map_err(|_| ScriptError::PushSize)?);
+                                ScriptNum(stack.rget(0)?.len().try_into().map_err(|_| ScriptError::PushSize)?);
                             stack.push(bn.getvch())
                         }
 
@@ -878,8 +876,8 @@ pub fn eval_step(
                                 if stack.len() < 2 {
                                     return Err(ScriptError::InvalidStackOperation);
                                 }
-                                let vch1 = stack.top(-2)?.clone();
-                                let vch2 = stack.top(-1)?.clone();
+                                let vch1 = stack.rget(1)?.clone();
+                                let vch2 = stack.rget(0)?.clone();
                                 let equal = vch1 == vch2;
                                 // OP_NOTEQUAL is disabled because it would be too easy to say
                                 // something like n != 1 and have some wiseguy pass in 1 with extra
@@ -914,7 +912,7 @@ pub fn eval_step(
                             if stack.len() < 1 {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
-                            let mut bn = ScriptNum::new(stack.top(-1)?, require_minimal, None)
+                            let mut bn = ScriptNum::new(stack.rget(0)?, require_minimal, None)
                                       .map_err(ScriptError::ScriptNumError)?;
                             match op {
                                 OP_1ADD => bn = bn + BN_ONE,
@@ -950,9 +948,9 @@ pub fn eval_step(
                             if stack.len() < 2 {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
-                            let bn1 = ScriptNum::new(stack.top(-2)?, require_minimal, None)
+                            let bn1 = ScriptNum::new(stack.rget(1)?, require_minimal, None)
                                       .map_err(ScriptError::ScriptNumError)?;
-                            let bn2 = ScriptNum::new(stack.top(-1)?, require_minimal, None)
+                            let bn2 = ScriptNum::new(stack.rget(0)?, require_minimal, None)
                                       .map_err(ScriptError::ScriptNumError)?;
                             let bn = match op {
                                 OP_ADD =>
@@ -979,7 +977,7 @@ pub fn eval_step(
                             stack.push(bn.getvch());
 
                             if op == OP_NUMEQUALVERIFY {
-                                if cast_to_bool(stack.top(-1)?) {
+                                if cast_to_bool(stack.rget(0)?) {
                                     stack.pop()?;
                                 } else {
                                     return Err(ScriptError::NumEqualVerify);
@@ -992,11 +990,11 @@ pub fn eval_step(
                             if stack.len() < 3 {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
-                            let bn1 = ScriptNum::new(stack.top(-3)?, require_minimal, None)
+                            let bn1 = ScriptNum::new(stack.rget(2)?, require_minimal, None)
                                       .map_err(ScriptError::ScriptNumError)?;
-                            let bn2 = ScriptNum::new(stack.top(-2)?, require_minimal, None)
+                            let bn2 = ScriptNum::new(stack.rget(1)?, require_minimal, None)
                                       .map_err(ScriptError::ScriptNumError)?;
-                            let bn3 = ScriptNum::new(stack.top(-1)?, require_minimal, None)
+                            let bn3 = ScriptNum::new(stack.rget(0)?, require_minimal, None)
                                       .map_err(ScriptError::ScriptNumError)?;
                             let value = bn2 <= bn1 && bn1 < bn3;
                             stack.pop()?;
@@ -1021,7 +1019,7 @@ pub fn eval_step(
                             if stack.len() < 1 {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
-                            let vch = stack.top(-1)?;
+                            let vch = stack.rget(0)?;
                             let mut vch_hash = vec![];
                             if op == OP_RIPEMD160 {
                                 vch_hash = Ripemd160::digest(vch).to_vec();
@@ -1047,8 +1045,8 @@ pub fn eval_step(
                                 return Err(ScriptError::InvalidStackOperation);
                             }
 
-                            let vch_sig = stack.top(-2)?.clone();
-                            let vch_pub_key = stack.top(-1)?.clone();
+                            let vch_sig = stack.rget(1)?.clone();
+                            let vch_pub_key = stack.rget(0)?.clone();
 
                             if !check_signature_encoding(&vch_sig, flags)? {
                                 // serror is set
@@ -1080,13 +1078,13 @@ pub fn eval_step(
                             // NB: This is guaranteed u8-safe, because we are limited to 20 keys and
                             //     20 signatures, plus a couple other fields. u8 also gives us total
                             //     conversions to the other types we deal with here (`isize` and `i64`).
-                            let mut i: u8 = 1;
+                            let mut i: u8 = 0;
                             if stack.len() < i.into() {
                                 return Err(ScriptError::InvalidStackOperation);
                             };
 
                             let mut keys_count =
-                                u8::try_from(ScriptNum::new(stack.top(-isize::from(i))?, require_minimal, None)
+                                u8::try_from(ScriptNum::new(stack.rget(i.into())?, require_minimal, None)
                                       .map_err(ScriptError::ScriptNumError)?.getint())
                                   .map_err(|_| ScriptError::PubKeyCount)?;
                             if keys_count > 20 {
@@ -1099,12 +1097,12 @@ pub fn eval_step(
                             i += 1;
                             let mut ikey = i;
                             i += keys_count;
-                            if stack.len() < i.into() {
+                            if stack.len() <= i.into() {
                                 return Err(ScriptError::InvalidStackOperation);
                             }
 
                             let mut sigs_count =
-                                u8::try_from(ScriptNum::new(stack.top(-isize::from(i))?, require_minimal, None)
+                                u8::try_from(ScriptNum::new(stack.rget(i.into())?, require_minimal, None)
                                       .map_err(ScriptError::ScriptNumError)?.getint())
                                   .map_err(|_| ScriptError::SigCount)?;
                             if sigs_count > keys_count {
@@ -1113,14 +1111,14 @@ pub fn eval_step(
                             i += 1;
                             let mut isig = i;
                             i += sigs_count;
-                            if stack.len() < i.into() {
+                            if stack.len() <= i.into() {
                                 return Err(ScriptError::InvalidStackOperation);
                             };
 
                             let mut success = true;
                             while success && sigs_count > 0 {
-                                let vch_sig: &ValType = stack.top(-isize::from(isig))?;
-                                let vch_pub_key: &ValType = stack.top(-isize::from(ikey))?;
+                                let vch_sig: &ValType = stack.rget(isig.into())?;
+                                let vch_pub_key: &ValType = stack.rget(ikey.into())?;
 
                                 // Note how this makes the exact order of pubkey/signature evaluation
                                 // distinguishable by CHECKMULTISIG NOT if the STRICTENC flag is set.
@@ -1168,7 +1166,7 @@ pub fn eval_step(
                                 return Err(ScriptError::InvalidStackOperation);
                             }
                             if flags.contains(VerificationFlags::NullDummy)
-                                && !stack.top(-1)?.is_empty()
+                                && !stack.rget(0)?.is_empty()
                             {
                                 return Err(ScriptError::SigNullDummy);
                             }
