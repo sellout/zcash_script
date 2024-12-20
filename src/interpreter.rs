@@ -151,14 +151,6 @@ pub struct CallbackTransactionSignatureChecker<'a> {
 
 type ValType = Vec<u8>;
 
-fn set_success<T>(res: T) -> Result<T, ScriptError> {
-    Ok(res)
-}
-
-fn set_error<T>(serror: ScriptError) -> Result<T, ScriptError> {
-    Err(serror)
-}
-
 fn cast_to_bool(vch: &ValType) -> bool {
     for i in 0..vch.len() {
         if vch[i] != 0 {
@@ -377,7 +369,7 @@ fn is_valid_signature_encoding(sig: &[u8]) -> bool {
 
 fn is_low_der_signature(vch_sig: &ValType) -> Result<bool, ScriptError> {
     if !is_valid_signature_encoding(vch_sig) {
-        return set_error(ScriptError::SigDER);
+        return Err(ScriptError::SigDER);
     };
     // https://bitcoin.stackexchange.com/a/12556:
     //     Also note that inside transaction signatures, an extra hashtype byte
@@ -409,14 +401,14 @@ fn check_signature_encoding(
         return Ok(true);
     };
     if !is_valid_signature_encoding(vch_sig) {
-        return set_error(ScriptError::SigDER);
+        return Err(ScriptError::SigDER);
     } else if flags.contains(VerificationFlags::LowS) && !is_low_der_signature(vch_sig)? {
         // serror is set
         return Ok(false);
     } else if flags.contains(VerificationFlags::StrictEnc)
         && !is_defined_hashtype_signature(vch_sig)
     {
-        return set_error(ScriptError::SigHashType);
+        return Err(ScriptError::SigHashType);
     };
     Ok(true)
 }
@@ -427,7 +419,7 @@ fn check_pub_key_encoding(vch_sig: &ValType, flags: VerificationFlags) -> Result
     {
         return Err(ScriptError::PubKeyType);
     };
-    set_success(())
+    Ok(())
 }
 
 fn check_minimal_push(data: &ValType, opcode: PushValue) -> bool {
@@ -508,7 +500,7 @@ pub fn eval_step(
     let mut vch_push_value = vec![];
     let opcode = Script::get_op2(pc, &mut vch_push_value)?;
     if vch_push_value.len() > MAX_SCRIPT_ELEMENT_SIZE {
-        return set_error(ScriptError::PushSize);
+        return Err(ScriptError::PushSize);
     }
 
     match opcode {
@@ -529,11 +521,11 @@ pub fn eval_step(
                     _ => {
                         if pv <= OP_PUSHDATA4 {
                             if require_minimal && !check_minimal_push(&vch_push_value, pv) {
-                                return set_error(ScriptError::MinimalData);
+                                return Err(ScriptError::MinimalData);
                             }
                             stack.push_back(vch_push_value.clone());
                         } else {
-                            return set_error(ScriptError::BadOpcode);
+                            return Err(ScriptError::BadOpcode);
                         }
                     }
                 }
@@ -543,7 +535,7 @@ pub fn eval_step(
             // Note how OP_RESERVED does not count towards the opcode limit.
             *op_count += 1;
             if *op_count > 201 {
-                return set_error(ScriptError::OpCount);
+                return Err(ScriptError::OpCount);
             }
 
             if op == OP_CAT
@@ -563,7 +555,7 @@ pub fn eval_step(
                 || op == OP_RSHIFT
                 || op == OP_CODESEPARATOR
             {
-                return set_error(ScriptError::DisabledOpcode); // Disabled opcodes.
+                return Err(ScriptError::DisabledOpcode); // Disabled opcodes.
             }
 
             if exec || (OP_IF <= op && op <= OP_ENDIF) {
@@ -580,11 +572,11 @@ pub fn eval_step(
                             // fork.
                             if !flags.contains(VerificationFlags::CHECKLOCKTIMEVERIFY) {
                                 if flags.contains(VerificationFlags::DiscourageUpgradableNOPs) {
-                                    return set_error(ScriptError::DiscourageUpgradableNOPs);
+                                    return Err(ScriptError::DiscourageUpgradableNOPs);
                                 }
                             } else {
                                 if stack.size() < 1 {
-                                    return set_error(ScriptError::InvalidStackOperation);
+                                    return Err(ScriptError::InvalidStackOperation);
                                 }
 
                                 // Note that elsewhere numeric opcodes are limited to
@@ -609,12 +601,12 @@ pub fn eval_step(
                                 // some arithmetic being done first, you can always use
                                 // 0 MAX CHECKLOCKTIMEVERIFY.
                                 if lock_time < ScriptNum(0) {
-                                    return set_error(ScriptError::NegativeLockTime);
+                                    return Err(ScriptError::NegativeLockTime);
                                 }
 
                                 // Actually compare the specified lock time with the transaction.
                                 if !checker.check_lock_time(&lock_time) {
-                                    return set_error(ScriptError::UnsatisfiedLockTime);
+                                    return Err(ScriptError::UnsatisfiedLockTime);
                                 }
                             }
                         }
@@ -625,7 +617,7 @@ pub fn eval_step(
                             // these NOPs (as part of a standard tx rule, for example) they can
                             // enable `DiscourageUpgradableNOPs` to turn these opcodes into errors.
                             if flags.contains(VerificationFlags::DiscourageUpgradableNOPs) {
-                                return set_error(ScriptError::DiscourageUpgradableNOPs);
+                                return Err(ScriptError::DiscourageUpgradableNOPs);
                             }
                         }
 
@@ -635,7 +627,7 @@ pub fn eval_step(
                             let mut value = false;
                             if exec {
                                 if stack.size() < 1 {
-                                    return set_error(ScriptError::UnbalancedConditional);
+                                    return Err(ScriptError::UnbalancedConditional);
                                 }
                                 let vch: &ValType = stack.top(-1)?;
                                 value = cast_to_bool(vch);
@@ -649,14 +641,14 @@ pub fn eval_step(
 
                         OP_ELSE => {
                             if vexec.empty() {
-                                return set_error(ScriptError::UnbalancedConditional);
+                                return Err(ScriptError::UnbalancedConditional);
                             }
                             vexec.back().map(|last| *last = !*last)?;
                         }
 
                         OP_ENDIF => {
                             if vexec.empty() {
-                                return set_error(ScriptError::UnbalancedConditional);
+                                return Err(ScriptError::UnbalancedConditional);
                             }
                             vexec.pop()?;
                         }
@@ -665,24 +657,24 @@ pub fn eval_step(
                             // (true -- ) or
                             // (false -- false) and return
                             if stack.size() < 1 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             let value = cast_to_bool(stack.top(-1)?);
                             if value {
                                 stack.pop()?;
                             } else {
-                                return set_error(ScriptError::Verify);
+                                return Err(ScriptError::Verify);
                             }
                         }
 
-                        OP_RETURN => return set_error(ScriptError::OpReturn),
+                        OP_RETURN => return Err(ScriptError::OpReturn),
 
                         //
                         // Stack ops
                         //
                         OP_TOALTSTACK => {
                             if stack.empty() {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             altstack.push_back(stack.top(-1)?.clone());
                             stack.pop()?;
@@ -690,7 +682,7 @@ pub fn eval_step(
 
                         OP_FROMALTSTACK => {
                             if altstack.empty() {
-                                return set_error(ScriptError::InvalidAltstackOperation);
+                                return Err(ScriptError::InvalidAltstackOperation);
                             }
                             stack.push_back(altstack.top(-1)?.clone());
                             altstack.pop()?;
@@ -698,7 +690,7 @@ pub fn eval_step(
 
                         OP_2DROP => {
                             if stack.size() < 2 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
 
                             stack.pop()?;
@@ -708,7 +700,7 @@ pub fn eval_step(
                         OP_2DUP => {
                             // (x1 x2 -- x1 x2 x1 x2)
                             if stack.size() < 2 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             let vch1 = stack.top(-2)?.clone();
                             let vch2 = stack.top(-1)?.clone();
@@ -719,7 +711,7 @@ pub fn eval_step(
                         OP_3DUP => {
                             // (x1 x2 x3 -- x1 x2 x3 x1 x2 x3)
                             if stack.size() < 3 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             let vch1 = stack.top(-3)?.clone();
                             let vch2 = stack.top(-2)?.clone();
@@ -732,7 +724,7 @@ pub fn eval_step(
                         OP_2OVER => {
                             // (x1 x2 x3 x4 -- x1 x2 x3 x4 x1 x2)
                             if stack.size() < 4 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             let vch1 = stack.top(-4)?.clone();
                             let vch2 = stack.top(-3)?.clone();
@@ -743,7 +735,7 @@ pub fn eval_step(
                         OP_2ROT => {
                             // (x1 x2 x3 x4 x5 x6 -- x3 x4 x5 x6 x1 x2)
                             if stack.size() < 6 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             let vch1 = stack.top(-6)?.clone();
                             let vch2 = stack.top(-5)?.clone();
@@ -755,7 +747,7 @@ pub fn eval_step(
                         OP_2SWAP => {
                             // (x1 x2 x3 x4 -- x3 x4 x1 x2)
                             if stack.size() < 4 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             stack.swap(-4, -2)?;
                             stack.swap(-3, -1)?;
@@ -764,7 +756,7 @@ pub fn eval_step(
                         OP_IFDUP => {
                             // (x - 0 | x x)
                             if stack.size() < 1 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             let vch = stack.top(-1)?;
                             if cast_to_bool(vch) {
@@ -782,7 +774,7 @@ pub fn eval_step(
                         OP_DROP => {
                             // (x -- )
                             if stack.size() < 1 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             stack.pop()?;
                         }
@@ -790,7 +782,7 @@ pub fn eval_step(
                         OP_DUP => {
                             // (x -- x x)
                             if stack.size() < 1 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
 
                             let a = stack.pop()?;
@@ -801,7 +793,7 @@ pub fn eval_step(
                         OP_NIP => {
                             // (x1 x2 -- x2)
                             if stack.size() < 2 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             stack.erase(stack.end() - 2, None);
                         }
@@ -809,7 +801,7 @@ pub fn eval_step(
                         OP_OVER => {
                             // (x1 x2 -- x1 x2 x1)
                             if stack.size() < 2 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             let vch = stack.top(-2)?;
                             stack.push_back(vch.clone());
@@ -820,7 +812,7 @@ pub fn eval_step(
                             // (xn ... x2 x1 x0 n - xn ... x2 x1 x0 xn)
                             // (xn ... x2 x1 x0 n - ... x2 x1 x0 xn)
                             if stack.size() < 2 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             let n =
                                 u16::try_from(ScriptNum::new(stack.top(-1)?, require_minimal, None)
@@ -828,7 +820,7 @@ pub fn eval_step(
                                 .map_err(|_| ScriptError::InvalidStackOperation)?;
                             stack.pop()?;
                             if usize::from(n) >= stack.size() {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             let vch: ValType =
                                 stack.top(-isize::try_from(n).map_err(|_| ScriptError::InvalidStackOperation)? - 1)?
@@ -844,7 +836,7 @@ pub fn eval_step(
                             //  x2 x1 x3  after first swap
                             //  x2 x3 x1  after second swap
                             if stack.size() < 3 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             stack.swap(-3, -2)?;
                             stack.swap(-2, -1)?;
@@ -853,7 +845,7 @@ pub fn eval_step(
                         OP_SWAP => {
                             // (x1 x2 -- x2 x1)
                             if stack.size() < 2 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             stack.swap(-2, -1)?;
                         }
@@ -861,7 +853,7 @@ pub fn eval_step(
                         OP_TUCK => {
                             // (x1 x2 -- x2 x1 x2)
                             if stack.size() < 2 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             let vch = stack.top(-1)?.clone();
                             stack.insert(stack.end() - 2, vch)
@@ -871,7 +863,7 @@ pub fn eval_step(
                         OP_SIZE => {
                             // (in -- in size)
                             if stack.size() < 1 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             let bn =
                                 ScriptNum(stack.top(-1)?.len().try_into().map_err(|_| ScriptError::PushSize)?);
@@ -888,7 +880,7 @@ pub fn eval_step(
                             => {
                                 // (x1 x2 - bool)
                                 if stack.size() < 2 {
-                                    return set_error(ScriptError::InvalidStackOperation);
+                                    return Err(ScriptError::InvalidStackOperation);
                                 }
                                 let vch1 = stack.top(-2)?.clone();
                                 let vch2 = stack.top(-1)?.clone();
@@ -907,7 +899,7 @@ pub fn eval_step(
                                     if equal {
                                         stack.pop()?;
                                     } else {
-                                        return set_error(ScriptError::EqualVerify);
+                                        return Err(ScriptError::EqualVerify);
                                     }
                                 }
                             }
@@ -924,7 +916,7 @@ pub fn eval_step(
                         | OP_0NOTEQUAL => {
                             // (in -- out)
                             if stack.size() < 1 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             let mut bn = ScriptNum::new(stack.top(-1)?, require_minimal, None)
                                       .map_err(ScriptError::ScriptNumError)?;
@@ -960,7 +952,7 @@ pub fn eval_step(
                         | OP_MAX => {
                             // (x1 x2 -- out)
                             if stack.size() < 2 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             let bn1 = ScriptNum::new(stack.top(-2)?, require_minimal, None)
                                       .map_err(ScriptError::ScriptNumError)?;
@@ -994,7 +986,7 @@ pub fn eval_step(
                                 if cast_to_bool(stack.top(-1)?) {
                                     stack.pop()?;
                                 } else {
-                                    return set_error(ScriptError::NumEqualVerify);
+                                    return Err(ScriptError::NumEqualVerify);
                                 }
                             }
                         }
@@ -1002,7 +994,7 @@ pub fn eval_step(
                         OP_WITHIN => {
                             // (x min max -- out)
                             if stack.size() < 3 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             let bn1 = ScriptNum::new(stack.top(-3)?, require_minimal, None)
                                       .map_err(ScriptError::ScriptNumError)?;
@@ -1031,7 +1023,7 @@ pub fn eval_step(
                         | OP_HASH256 => {
                             // (in -- hash)
                             if stack.size() < 1 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             let vch = stack.top(-1)?;
                             let mut vch_hash = vec![];
@@ -1056,7 +1048,7 @@ pub fn eval_step(
                         | OP_CHECKSIGVERIFY => {
                             // (sig pubkey -- bool)
                             if stack.size() < 2 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
 
                             let vch_sig = stack.top(-2)?.clone();
@@ -1064,7 +1056,7 @@ pub fn eval_step(
 
                             if !check_signature_encoding(&vch_sig, flags)? {
                                 // serror is set
-                                return set_error(ScriptError::UnknownError);
+                                return Err(ScriptError::UnknownError);
                             }
                             check_pub_key_encoding(&vch_pub_key, flags)?;
                             let success = checker.check_sig(&vch_sig, &vch_pub_key, script);
@@ -1080,7 +1072,7 @@ pub fn eval_step(
                                 if success {
                                     stack.pop()?;
                                 } else {
-                                    return set_error(ScriptError::CheckSigVerify);
+                                    return Err(ScriptError::CheckSigVerify);
                                 }
                             }
                         }
@@ -1094,7 +1086,7 @@ pub fn eval_step(
                             //     conversions to the other types we deal with here (`isize` and `i64`).
                             let mut i: u8 = 1;
                             if stack.size() < i.into() {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             };
 
                             let mut keys_count =
@@ -1102,17 +1094,17 @@ pub fn eval_step(
                                       .map_err(ScriptError::ScriptNumError)?.getint())
                                   .map_err(|_| ScriptError::PubKeyCount)?;
                             if keys_count > 20 {
-                                return set_error(ScriptError::PubKeyCount);
+                                return Err(ScriptError::PubKeyCount);
                             };
                             *op_count += keys_count;
                             if *op_count > 201 {
-                                return set_error(ScriptError::OpCount);
+                                return Err(ScriptError::OpCount);
                             };
                             i += 1;
                             let mut ikey = i;
                             i += keys_count;
                             if stack.size() < i.into() {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
 
                             let mut sigs_count =
@@ -1120,13 +1112,13 @@ pub fn eval_step(
                                       .map_err(ScriptError::ScriptNumError)?.getint())
                                   .map_err(|_| ScriptError::SigCount)?;
                             if sigs_count > keys_count {
-                                return set_error(ScriptError::SigCount);
+                                return Err(ScriptError::SigCount);
                             };
                             i += 1;
                             let mut isig = i;
                             i += sigs_count;
                             if stack.size() < i.into() {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             };
 
                             let mut success = true;
@@ -1139,7 +1131,7 @@ pub fn eval_step(
                                 // See the script_(in)valid tests for details.
                                 if !check_signature_encoding(vch_sig, flags)? {
                                     // serror is set
-                                    return set_error(ScriptError::UnknownError);
+                                    return Err(ScriptError::UnknownError);
                                 };
                                 check_pub_key_encoding(vch_pub_key, flags)?;
 
@@ -1177,12 +1169,12 @@ pub fn eval_step(
                             // so optionally verify it is exactly equal to zero prior
                             // to removing it from the stack.
                             if stack.size() < 1 {
-                                return set_error(ScriptError::InvalidStackOperation);
+                                return Err(ScriptError::InvalidStackOperation);
                             }
                             if flags.contains(VerificationFlags::NullDummy)
                                 && !stack.top(-1)?.is_empty()
                             {
-                                return set_error(ScriptError::SigNullDummy);
+                                return Err(ScriptError::SigNullDummy);
                             }
                             stack.pop()?;
 
@@ -1196,13 +1188,13 @@ pub fn eval_step(
                                 if success {
                                     stack.pop()?;
                                 } else {
-                                    return set_error(ScriptError::CheckMultisigVerify);
+                                    return Err(ScriptError::CheckMultisigVerify);
                                 }
                             }
                         }
 
                         _ => {
-                            return set_error(ScriptError::BadOpcode);
+                            return Err(ScriptError::BadOpcode);
                         }
                     }
             }
@@ -1211,7 +1203,7 @@ pub fn eval_step(
 
     // Size limits
     if stack.size() + altstack.size() > 1000 {
-        set_error(ScriptError::StackSize)
+        Err(ScriptError::StackSize)
     } else {
         Ok(())
     }
@@ -1232,7 +1224,7 @@ pub fn eval_script<T>(
 ) -> Result<Stack<Vec<u8>>, ScriptError> {
     // There's a limit on how large scripts can be.
     if script.0.len() > MAX_SCRIPT_SIZE {
-        return set_error(ScriptError::ScriptSize);
+        return Err(ScriptError::ScriptSize);
     }
 
     let mut pc = script.0;
@@ -1249,7 +1241,7 @@ pub fn eval_script<T>(
     }
 
     if !state.vexec.empty() {
-        return set_error(ScriptError::UnbalancedConditional);
+        return Err(ScriptError::UnbalancedConditional);
     }
 
     Ok(state.stack)
@@ -1331,16 +1323,16 @@ pub fn verify_script<T>(
     stepper: &impl Fn(&mut &[u8], &Script, &mut State, &mut T) -> Result<(), ScriptError>,
 ) -> Result<(), ScriptError> {
     if flags.contains(VerificationFlags::SigPushOnly) && !script_sig.is_push_only() {
-        return set_error(ScriptError::SigPushOnly);
+        return Err(ScriptError::SigPushOnly);
     }
 
     let data_stack = eval_script(Stack(Vec::new()), script_sig, payload, stepper)?;
     let pub_key_stack = eval_script(data_stack.clone(), script_pub_key, payload, stepper)?;
     if pub_key_stack.empty() {
-        return set_error(ScriptError::EvalFalse);
+        return Err(ScriptError::EvalFalse);
     }
     if !cast_to_bool(pub_key_stack.last()?) {
-        return set_error(ScriptError::EvalFalse);
+        return Err(ScriptError::EvalFalse);
     }
 
     // Additional validation for spend-to-script-hash transactions:
@@ -1349,7 +1341,7 @@ pub fn verify_script<T>(
     {
         // script_sig must be literals-only or validation fails
         if !script_sig.is_push_only() {
-            return set_error(ScriptError::SigPushOnly);
+            return Err(ScriptError::SigPushOnly);
         };
 
         // stack cannot be empty here, because if it was the
@@ -1365,10 +1357,10 @@ pub fn verify_script<T>(
 
                 eval_script(remaining_stack, &pub_key_2, payload, stepper).and_then(|p2sh_stack| {
                     if p2sh_stack.empty() {
-                        return set_error(ScriptError::EvalFalse);
+                        return Err(ScriptError::EvalFalse);
                     }
                     if !cast_to_bool(p2sh_stack.last()?) {
-                        return set_error(ScriptError::EvalFalse);
+                        return Err(ScriptError::EvalFalse);
                     }
                     Ok(p2sh_stack)
                 })
@@ -1385,9 +1377,9 @@ pub fn verify_script<T>(
         // would be possible, which is not a softfork (and P2SH should be one).
         assert!(flags.contains(VerificationFlags::P2SH));
         if result_stack.size() != 1 {
-            return set_error(ScriptError::CleanStack);
+            return Err(ScriptError::CleanStack);
         }
     };
 
-    set_success(())
+    Ok(())
 }
