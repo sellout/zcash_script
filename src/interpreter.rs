@@ -6,7 +6,7 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
 use super::external::pubkey::PubKey;
-use super::script::{Operation::*, PushValue::*, *};
+use super::script::{Control::*, Normal::*, PushValue::*, *};
 use super::script_error::*;
 
 /// The ways in which a transparent input may commit to the transparent outputs of its
@@ -422,698 +422,735 @@ pub fn eval_step<'a>(
     checker: impl SignatureChecker,
     state: &mut State,
 ) -> Result<&'a [u8], ScriptError> {
-    let stack = &mut state.stack;
-    let op_count = &mut state.op_count;
-    let require_minimal = flags.contains(VerificationFlags::MinimalData);
-    let vexec = &mut state.vexec;
-    let altstack = &mut state.altstack;
-
-    // Are we in an executing branch of the script?
-    let exec = vexec.iter().all(|value| *value);
-
     //
     // Read instruction
     //
-    let (opcode, vch_push_value, new_pc) = Script::get_op2(pc)?;
-    if vch_push_value.len() > MAX_SCRIPT_ELEMENT_SIZE {
-        return Err(ScriptError::PushSize);
-    }
+    Script::get_op2(pc).and_then(|(opcode, vch_push_value, new_pc)| {
+        eval_opcode(flags, opcode, vch_push_value, script, &checker, state).map(|()| new_pc)
+    })
+}
 
-    match opcode {
+fn eval_opcode(
+    flags: VerificationFlags,
+    opcode: Opcode,
+    vch_push_value: &[u8],
+    script: &Script,
+    checker: &dyn SignatureChecker,
+    state: &mut State,
+) -> Result<(), ScriptError> {
+    let stack = &mut state.stack;
+    let op_count = &mut state.op_count;
+    let vexec = &mut state.vexec;
+    let altstack = &mut state.altstack;
+
+    (match opcode {
         Opcode::PushValue(pv) => {
-            if exec {
-                match pv {
-                    //
-                    // Push value
-                    //
-                    OP_1NEGATE | OP_1 | OP_2 | OP_3 | OP_4 | OP_5 | OP_6 | OP_7 | OP_8 | OP_9
-                    | OP_10 | OP_11 | OP_12 | OP_13 | OP_14 | OP_15 | OP_16 => {
-                        // ( -- value)
-                        let bn = ScriptNum::from(u8::from(pv)) - u8::from(OP_RESERVED).into();
-                        stack.push(bn.getvch());
-                        // The result of these opcodes should always be the minimal way to push the data
-                        // they push, so no need for a CheckMinimalPush here.
-                    }
-                    _ => {
-                        if pv <= OP_PUSHDATA4 {
-                            if require_minimal && !check_minimal_push(vch_push_value, pv) {
-                                return Err(ScriptError::MinimalData);
-                            }
-                            stack.push(vch_push_value.to_vec());
-                        } else {
-                            return Err(ScriptError::BadOpcode);
-                        }
-                    }
+            if vch_push_value.len() <= MAX_SCRIPT_ELEMENT_SIZE {
+                if should_exec(vexec) {
+                    eval_push_value(
+                        pv,
+                        vch_push_value,
+                        flags.contains(VerificationFlags::MinimalData),
+                        stack,
+                    )
+                } else {
+                    Ok(())
                 }
+            } else {
+                Err(ScriptError::PushSize)
             }
         }
         Opcode::Operation(op) => {
             // Note how OP_RESERVED does not count towards the opcode limit.
             *op_count += 1;
-            if *op_count > 201 {
-                return Err(ScriptError::OpCount);
-            }
-
-            if op == OP_CAT
-                || op == OP_SUBSTR
-                || op == OP_LEFT
-                || op == OP_RIGHT
-                || op == OP_INVERT
-                || op == OP_AND
-                || op == OP_OR
-                || op == OP_XOR
-                || op == OP_2MUL
-                || op == OP_2DIV
-                || op == OP_MUL
-                || op == OP_DIV
-                || op == OP_MOD
-                || op == OP_LSHIFT
-                || op == OP_RSHIFT
-                || op == OP_CODESEPARATOR
-            {
-                return Err(ScriptError::DisabledOpcode); // Disabled opcodes.
-            }
-
-            if exec || (OP_IF <= op && op <= OP_ENDIF) {
+            if *op_count <= 201 {
                 match op {
-                    //
-                    // Control
-                    //
-                    OP_NOP => (),
-
-                    OP_CHECKLOCKTIMEVERIFY => {
-                        // https://zips.z.cash/protocol/protocol.pdf#bips :
-                        //
-                        //   The following BIPs apply starting from the Zcash genesis block,
-                        //   i.e. any activation rules or exceptions for particular blocks in
-                        //   the Bitcoin block chain are to be ignored: [BIP-16], [BIP-30],
-                        //   [BIP-65], [BIP-66].
-                        //
-                        // So BIP 65, which defines CHECKLOCKTIMEVERIFY, is in practice always
-                        // enabled, and this `if` branch is dead code. In zcashd see
-                        // https://github.com/zcash/zcash/blob/a3435336b0c561799ac6805a27993eca3f9656df/src/main.cpp#L3151
-                        if !flags.contains(VerificationFlags::CHECKLOCKTIMEVERIFY) {
-                            if flags.contains(VerificationFlags::DiscourageUpgradableNOPs) {
-                                return Err(ScriptError::DiscourageUpgradableNOPs);
-                            }
+                    Operation::Control(control) => eval_control(control, stack, vexec),
+                    Operation::Normal(normal) => {
+                        if should_exec(vexec) {
+                            eval_operation(
+                                normal, flags, script, checker, stack, altstack, op_count,
+                            )
                         } else {
-                            if stack.is_empty() {
-                                return Err(ScriptError::InvalidStackOperation);
-                            }
-
-                            // Note that elsewhere numeric opcodes are limited to
-                            // operands in the range -2**31+1 to 2**31-1, however it is
-                            // legal for opcodes to produce results exceeding that
-                            // range. This limitation is implemented by `ScriptNum`'s
-                            // default 4-byte limit.
-                            //
-                            // If we kept to that limit we'd have a year 2038 problem,
-                            // even though the `lock_time` field in transactions
-                            // themselves is u32 which only becomes meaningless
-                            // after the year 2106.
-                            //
-                            // Thus as a special case we tell `ScriptNum` to accept up
-                            // to 5-byte bignums, which are good until 2**39-1, well
-                            // beyond the 2**32-1 limit of the `lock_time` field itself.
-                            let lock_time =
-                                ScriptNum::new(stack.rget(0)?, require_minimal, Some(5))?;
-
-                            // In the rare event that the argument may be < 0 due to
-                            // some arithmetic being done first, you can always use
-                            // 0 MAX CHECKLOCKTIMEVERIFY.
-                            if lock_time < ScriptNum::ZERO {
-                                return Err(ScriptError::NegativeLockTime);
-                            }
-
-                            // Actually compare the specified lock time with the transaction.
-                            if !checker.check_lock_time(&lock_time) {
-                                return Err(ScriptError::UnsatisfiedLockTime);
-                            }
+                            Ok(())
                         }
                     }
-
-                    OP_NOP1 | OP_NOP3 | OP_NOP4 | OP_NOP5 | OP_NOP6 | OP_NOP7 | OP_NOP8
-                    | OP_NOP9 | OP_NOP10 => {
-                        // Do nothing, though if the caller wants to prevent people from using
-                        // these NOPs (as part of a standard tx rule, for example) they can
-                        // enable `DiscourageUpgradableNOPs` to turn these opcodes into errors.
-                        if flags.contains(VerificationFlags::DiscourageUpgradableNOPs) {
-                            return Err(ScriptError::DiscourageUpgradableNOPs);
-                        }
-                    }
-
-                    OP_IF | OP_NOTIF => {
-                        // <expression> if [statements] [else [statements]] endif
-                        let mut value = false;
-                        if exec {
-                            if stack.is_empty() {
-                                return Err(ScriptError::UnbalancedConditional);
-                            }
-                            let vch: &ValType = stack.rget(0)?;
-                            value = cast_to_bool(vch);
-                            if op == OP_NOTIF {
-                                value = !value
-                            };
-                            stack.pop()?;
-                        }
-                        vexec.push(value);
-                    }
-
-                    OP_ELSE => {
-                        if vexec.is_empty() {
-                            return Err(ScriptError::UnbalancedConditional);
-                        }
-                        vexec.last_mut().map(|last| *last = !*last)?;
-                    }
-
-                    OP_ENDIF => {
-                        if vexec.is_empty() {
-                            return Err(ScriptError::UnbalancedConditional);
-                        }
-                        vexec.pop()?;
-                    }
-
-                    OP_VERIFY => {
-                        // (true -- ) or
-                        // (false -- false) and return
-                        if stack.is_empty() {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        let value = cast_to_bool(stack.rget(0)?);
-                        if value {
-                            stack.pop()?;
+                    Operation::Unknown(_) => {
+                        if should_exec(vexec) {
+                            Err(ScriptError::BadOpcode)
                         } else {
-                            return Err(ScriptError::Verify);
+                            Ok(())
                         }
-                    }
-
-                    OP_RETURN => return Err(ScriptError::OpReturn),
-
-                    //
-                    // Stack ops
-                    //
-                    OP_TOALTSTACK => {
-                        if stack.is_empty() {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        altstack.push(stack.rget(0)?.clone());
-                        stack.pop()?;
-                    }
-
-                    OP_FROMALTSTACK => {
-                        if altstack.is_empty() {
-                            return Err(ScriptError::InvalidAltstackOperation);
-                        }
-                        stack.push(altstack.rget(0)?.clone());
-                        altstack.pop()?;
-                    }
-
-                    OP_2DROP => {
-                        if stack.len() < 2 {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-
-                        stack.pop()?;
-                        stack.pop()?;
-                    }
-
-                    OP_2DUP => {
-                        // (x1 x2 -- x1 x2 x1 x2)
-                        if stack.len() < 2 {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        let vch1 = stack.rget(1)?.clone();
-                        let vch2 = stack.rget(0)?.clone();
-                        stack.push(vch1);
-                        stack.push(vch2);
-                    }
-
-                    OP_3DUP => {
-                        // (x1 x2 x3 -- x1 x2 x3 x1 x2 x3)
-                        if stack.len() < 3 {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        let vch1 = stack.rget(2)?.clone();
-                        let vch2 = stack.rget(1)?.clone();
-                        let vch3 = stack.rget(0)?.clone();
-                        stack.push(vch1);
-                        stack.push(vch2);
-                        stack.push(vch3);
-                    }
-
-                    OP_2OVER => {
-                        // (x1 x2 x3 x4 -- x1 x2 x3 x4 x1 x2)
-                        if stack.len() < 4 {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        let vch1 = stack.rget(3)?.clone();
-                        let vch2 = stack.rget(2)?.clone();
-                        stack.push(vch1);
-                        stack.push(vch2);
-                    }
-
-                    OP_2ROT => {
-                        // (x1 x2 x3 x4 x5 x6 -- x3 x4 x5 x6 x1 x2)
-                        if stack.len() < 6 {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        let vch1 = stack.rget(5)?.clone();
-                        let vch2 = stack.rget(4)?.clone();
-                        stack.rerase(5, Some(3))?;
-                        stack.push(vch1);
-                        stack.push(vch2);
-                    }
-
-                    OP_2SWAP => {
-                        // (x1 x2 x3 x4 -- x3 x4 x1 x2)
-                        if stack.len() < 4 {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        stack.rswap(3, 1)?;
-                        stack.rswap(2, 0)?;
-                    }
-
-                    OP_IFDUP => {
-                        // (x - 0 | x x)
-                        if stack.is_empty() {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        let vch = stack.rget(0)?;
-                        if cast_to_bool(vch) {
-                            stack.push(vch.to_vec())
-                        }
-                    }
-
-                    OP_DEPTH => {
-                        // -- stacksize
-                        let bn =
-                            ScriptNum::try_from(stack.len()).map_err(|_| ScriptError::StackSize)?;
-                        stack.push(bn.getvch())
-                    }
-
-                    OP_DROP => {
-                        // (x -- )
-                        if stack.is_empty() {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        stack.pop()?;
-                    }
-
-                    OP_DUP => {
-                        // (x -- x x)
-                        if stack.is_empty() {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-
-                        let vch = stack.rget(0)?;
-                        stack.push(vch.clone());
-                    }
-
-                    OP_NIP => {
-                        // (x1 x2 -- x2)
-                        if stack.len() < 2 {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        stack.rerase(1, None)?;
-                    }
-
-                    OP_OVER => {
-                        // (x1 x2 -- x1 x2 x1)
-                        if stack.len() < 2 {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        let vch = stack.rget(1)?;
-                        stack.push(vch.clone());
-                    }
-
-                    OP_PICK | OP_ROLL => {
-                        // (xn ... x2 x1 x0 n - xn ... x2 x1 x0 xn)
-                        // (xn ... x2 x1 x0 n - ... x2 x1 x0 xn)
-                        if stack.len() < 2 {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        let n =
-                            u16::try_from(ScriptNum::new(stack.rget(0)?, require_minimal, None)?)
-                                .map_err(|_| ScriptError::InvalidStackOperation)?;
-                        stack.pop()?;
-                        if usize::from(n) >= stack.len() {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        let vch: ValType = stack.rget(n.into())?.clone();
-                        if op == OP_ROLL {
-                            stack.rerase(n.into(), None)?;
-                        }
-                        stack.push(vch)
-                    }
-
-                    OP_ROT => {
-                        // (x1 x2 x3 -- x2 x3 x1)
-                        //  x2 x1 x3  after first swap
-                        //  x2 x3 x1  after second swap
-                        if stack.len() < 3 {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        stack.rswap(2, 1)?;
-                        stack.rswap(1, 0)?;
-                    }
-
-                    OP_SWAP => {
-                        // (x1 x2 -- x2 x1)
-                        if stack.len() < 2 {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        stack.rswap(1, 0)?;
-                    }
-
-                    OP_TUCK => {
-                        // (x1 x2 -- x2 x1 x2)
-                        if stack.len() < 2 {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        let vch = stack.rget(0)?.clone();
-                        stack.rinsert(1, vch)?
-                    }
-
-                    OP_SIZE => {
-                        // (in -- in size)
-                        if stack.is_empty() {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        let bn = ScriptNum::try_from(stack.rget(0)?.len())
-                            .expect("stack element size fits in ScriptNum");
-                        stack.push(bn.getvch())
-                    }
-
-                    //
-                    // Bitwise logic
-                    //
-                    OP_EQUAL | OP_EQUALVERIFY => {
-                        // (x1 x2 - bool)
-                        if stack.len() < 2 {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        let vch1 = stack.rget(1)?.clone();
-                        let vch2 = stack.rget(0)?.clone();
-                        let equal = vch1 == vch2;
-                        stack.pop()?;
-                        stack.pop()?;
-                        stack.push(if equal { VCH_TRUE.to_vec() } else { VCH_FALSE });
-                        if op == OP_EQUALVERIFY {
-                            if equal {
-                                stack.pop()?;
-                            } else {
-                                return Err(ScriptError::EqualVerify);
-                            }
-                        }
-                    }
-
-                    //
-                    // Numeric
-                    //
-                    OP_1ADD | OP_1SUB | OP_NEGATE | OP_ABS | OP_NOT | OP_0NOTEQUAL => {
-                        // (in -- out)
-                        if stack.is_empty() {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        let mut bn = ScriptNum::new(stack.rget(0)?, require_minimal, None)?;
-                        match op {
-                            OP_1ADD => bn = bn + ScriptNum::ONE,
-                            OP_1SUB => bn = bn - ScriptNum::ONE,
-                            OP_NEGATE => bn = -bn,
-                            OP_ABS => {
-                                if bn < ScriptNum::ZERO {
-                                    bn = -bn
-                                }
-                            }
-                            OP_NOT => bn = ScriptNum::from(bn == ScriptNum::ZERO),
-                            OP_0NOTEQUAL => bn = ScriptNum::from(bn != ScriptNum::ZERO),
-                            _ => panic!("invalid opcode"),
-                        }
-                        stack.pop()?;
-                        stack.push(bn.getvch())
-                    }
-
-                    OP_ADD
-                    | OP_SUB
-                    | OP_BOOLAND
-                    | OP_BOOLOR
-                    | OP_NUMEQUAL
-                    | OP_NUMEQUALVERIFY
-                    | OP_NUMNOTEQUAL
-                    | OP_LESSTHAN
-                    | OP_GREATERTHAN
-                    | OP_LESSTHANOREQUAL
-                    | OP_GREATERTHANOREQUAL
-                    | OP_MIN
-                    | OP_MAX => {
-                        // (x1 x2 -- out)
-                        if stack.len() < 2 {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        let bn1 = ScriptNum::new(stack.rget(1)?, require_minimal, None)?;
-                        let bn2 = ScriptNum::new(stack.rget(0)?, require_minimal, None)?;
-                        let bn = match op {
-                            OP_ADD => bn1 + bn2,
-
-                            OP_SUB => bn1 - bn2,
-
-                            OP_BOOLAND => {
-                                ScriptNum::from(bn1 != ScriptNum::ZERO && bn2 != ScriptNum::ZERO)
-                            }
-                            OP_BOOLOR => {
-                                ScriptNum::from(bn1 != ScriptNum::ZERO || bn2 != ScriptNum::ZERO)
-                            }
-                            OP_NUMEQUAL => ScriptNum::from(bn1 == bn2),
-                            OP_NUMEQUALVERIFY => ScriptNum::from(bn1 == bn2),
-                            OP_NUMNOTEQUAL => ScriptNum::from(bn1 != bn2),
-                            OP_LESSTHAN => ScriptNum::from(bn1 < bn2),
-                            OP_GREATERTHAN => ScriptNum::from(bn1 > bn2),
-                            OP_LESSTHANOREQUAL => ScriptNum::from(bn1 <= bn2),
-                            OP_GREATERTHANOREQUAL => ScriptNum::from(bn1 >= bn2),
-                            OP_MIN => {
-                                if bn1 < bn2 {
-                                    bn1
-                                } else {
-                                    bn2
-                                }
-                            }
-                            OP_MAX => {
-                                if bn1 > bn2 {
-                                    bn1
-                                } else {
-                                    bn2
-                                }
-                            }
-                            _ => panic!("invalid opcode"),
-                        };
-                        stack.pop()?;
-                        stack.pop()?;
-                        stack.push(bn.getvch());
-
-                        if op == OP_NUMEQUALVERIFY {
-                            if cast_to_bool(stack.rget(0)?) {
-                                stack.pop()?;
-                            } else {
-                                return Err(ScriptError::NumEqualVerify);
-                            }
-                        }
-                    }
-
-                    OP_WITHIN => {
-                        // (x min max -- out)
-                        if stack.len() < 3 {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        let bn1 = ScriptNum::new(stack.rget(2)?, require_minimal, None)?;
-                        let bn2 = ScriptNum::new(stack.rget(1)?, require_minimal, None)?;
-                        let bn3 = ScriptNum::new(stack.rget(0)?, require_minimal, None)?;
-                        let value = bn2 <= bn1 && bn1 < bn3;
-                        stack.pop()?;
-                        stack.pop()?;
-                        stack.pop()?;
-                        stack.push(if value { VCH_TRUE.to_vec() } else { VCH_FALSE })
-                    }
-
-                    //
-                    // Crypto
-                    //
-                    OP_RIPEMD160 | OP_SHA1 | OP_SHA256 | OP_HASH160 | OP_HASH256 => {
-                        // (in -- hash)
-                        if stack.is_empty() {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        let vch = stack.rget(0)?;
-                        let mut vch_hash = vec![];
-                        if op == OP_RIPEMD160 {
-                            vch_hash = Ripemd160::digest(vch).to_vec();
-                        } else if op == OP_SHA1 {
-                            let mut hasher = Sha1::new();
-                            hasher.update(vch);
-                            vch_hash = hasher.finalize().to_vec();
-                        } else if op == OP_SHA256 {
-                            vch_hash = Sha256::digest(vch).to_vec();
-                        } else if op == OP_HASH160 {
-                            vch_hash = Ripemd160::digest(Sha256::digest(vch)).to_vec();
-                        } else if op == OP_HASH256 {
-                            vch_hash = Sha256::digest(Sha256::digest(vch)).to_vec();
-                        }
-                        stack.pop()?;
-                        stack.push(vch_hash)
-                    }
-
-                    OP_CHECKSIG | OP_CHECKSIGVERIFY => {
-                        // (sig pubkey -- bool)
-                        if stack.len() < 2 {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-
-                        let vch_sig = stack.rget(1)?.clone();
-                        let vch_pub_key = stack.rget(0)?.clone();
-
-                        let success =
-                            is_sig_valid(&vch_sig, &vch_pub_key, flags, script, &checker)?;
-
-                        stack.pop()?;
-                        stack.pop()?;
-                        stack.push(if success {
-                            VCH_TRUE.to_vec()
-                        } else {
-                            VCH_FALSE
-                        });
-                        if op == OP_CHECKSIGVERIFY {
-                            if success {
-                                stack.pop()?;
-                            } else {
-                                return Err(ScriptError::CheckSigVerify);
-                            }
-                        }
-                    }
-
-                    OP_CHECKMULTISIG | OP_CHECKMULTISIGVERIFY => {
-                        // ([sig ...] num_of_signatures [pubkey ...] num_of_pubkeys -- bool)
-
-                        // NB: This is guaranteed u8-safe, because we are limited to 20 keys and
-                        //     20 signatures, plus a couple other fields. u8 also gives us total
-                        //     conversions to the other types we deal with here (`isize` and `i64`).
-                        let mut i: u8 = 0;
-                        if stack.len() < i.into() {
-                            return Err(ScriptError::InvalidStackOperation);
-                        };
-
-                        let mut keys_count = u8::try_from(ScriptNum::new(
-                            stack.rget(i.into())?,
-                            require_minimal,
-                            None,
-                        )?)
-                        .map_err(|_| ScriptError::PubKeyCount)?;
-                        if keys_count > 20 {
-                            return Err(ScriptError::PubKeyCount);
-                        };
-                        assert!(*op_count <= 201);
-                        *op_count += keys_count;
-                        if *op_count > 201 {
-                            return Err(ScriptError::OpCount);
-                        };
-                        i += 1;
-                        let mut ikey = i;
-                        i += keys_count;
-                        if stack.len() <= i.into() {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-
-                        let mut sigs_count = u8::try_from(ScriptNum::new(
-                            stack.rget(i.into())?,
-                            require_minimal,
-                            None,
-                        )?)
-                        .map_err(|_| ScriptError::SigCount)?;
-                        if sigs_count > keys_count {
-                            return Err(ScriptError::SigCount);
-                        };
-                        assert!(i <= 21);
-                        i += 1;
-                        let mut isig = i;
-                        i += sigs_count;
-                        if stack.len() <= i.into() {
-                            return Err(ScriptError::InvalidStackOperation);
-                        };
-
-                        let mut success = true;
-                        while success && sigs_count > 0 {
-                            let vch_sig: &ValType = stack.rget(isig.into())?;
-                            let vch_pub_key: &ValType = stack.rget(ikey.into())?;
-
-                            // Note how this makes the exact order of pubkey/signature evaluation
-                            // distinguishable by CHECKMULTISIG NOT if the STRICTENC flag is set.
-                            // See the script_(in)valid tests for details.
-                            let ok: bool =
-                                is_sig_valid(vch_sig, vch_pub_key, flags, script, &checker)?;
-
-                            if ok {
-                                isig += 1;
-                                sigs_count -= 1;
-                            }
-                            ikey += 1;
-                            keys_count -= 1;
-
-                            // If there are more signatures left than keys left,
-                            // then too many signatures have failed. Exit early,
-                            // without checking any further signatures.
-                            if sigs_count > keys_count {
-                                success = false;
-                            };
-                        }
-
-                        // Clean up stack of actual arguments
-                        for _ in 1..i {
-                            stack.pop()?;
-                        }
-
-                        // A bug causes CHECKMULTISIG to consume one extra argument
-                        // whose contents were not checked in any way.
-                        //
-                        // Unfortunately this is a potential source of mutability,
-                        // so optionally verify it is exactly equal to zero prior
-                        // to removing it from the stack.
-                        if stack.is_empty() {
-                            return Err(ScriptError::InvalidStackOperation);
-                        }
-                        if flags.contains(VerificationFlags::NullDummy)
-                            && !stack.rget(0)?.is_empty()
-                        {
-                            return Err(ScriptError::SigNullDummy);
-                        }
-                        stack.pop()?;
-
-                        stack.push(if success {
-                            VCH_TRUE.to_vec()
-                        } else {
-                            VCH_FALSE
-                        });
-
-                        if op == OP_CHECKMULTISIGVERIFY {
-                            if success {
-                                stack.pop()?;
-                            } else {
-                                return Err(ScriptError::CheckMultisigVerify);
-                            }
-                        }
-                    }
-
-                    _ => {
-                        return Err(ScriptError::BadOpcode);
                     }
                 }
+            } else {
+                Err(ScriptError::OpCount)
+            }
+        }
+    })
+    .and_then(|()| {
+        // Size limits
+        if stack.len() + altstack.len() > 1000 {
+            Err(ScriptError::StackSize)
+        } else {
+            Ok(())
+        }
+    })
+}
+
+fn eval_push_value(
+    pv: PushValue,
+    vch_push_value: &[u8],
+    require_minimal: bool,
+    stack: &mut Stack<Vec<u8>>,
+) -> Result<(), ScriptError> {
+    match pv {
+        //
+        // Push value
+        //
+        OP_1NEGATE | OP_1 | OP_2 | OP_3 | OP_4 | OP_5 | OP_6 | OP_7 | OP_8 | OP_9 | OP_10
+        | OP_11 | OP_12 | OP_13 | OP_14 | OP_15 | OP_16 => {
+            // ( -- value)
+            let bn = ScriptNum::from(u8::from(pv)) - u8::from(OP_RESERVED).into();
+            stack.push(bn.getvch());
+            // The result of these opcodes should always be the minimal way to push the data
+            // they push, so no need for a CheckMinimalPush here.
+        }
+        _ => {
+            if pv <= OP_PUSHDATA4 {
+                if require_minimal && !check_minimal_push(vch_push_value, pv) {
+                    return Err(ScriptError::MinimalData);
+                }
+                stack.push(vch_push_value.to_vec());
+            } else {
+                return Err(ScriptError::BadOpcode);
             }
         }
     }
+    Ok(())
+}
 
-    // Size limits
-    if stack.len() + altstack.len() > 1000 {
-        return Err(ScriptError::StackSize);
+// Are we in an executing branch of the script?
+fn should_exec(vexec: &Stack<bool>) -> bool {
+    vexec.iter().all(|value| *value)
+}
+
+/// <expression> if [statements] [else [statements]] endif
+fn eval_control(
+    op: Control,
+    stack: &mut Stack<Vec<u8>>,
+    vexec: &mut Stack<bool>,
+) -> Result<(), ScriptError> {
+    match op {
+        OP_IF | OP_NOTIF => {
+            // <expression> if [statements] [else [statements]] endif
+            let mut value = false;
+            if should_exec(vexec) {
+                if stack.is_empty() {
+                    return Err(ScriptError::UnbalancedConditional);
+                }
+                let vch: &ValType = stack.rget(0)?;
+                value = cast_to_bool(vch);
+                if op == OP_NOTIF {
+                    value = !value
+                };
+                stack.pop()?;
+            }
+            vexec.push(value);
+        }
+
+        OP_ELSE => {
+            if vexec.is_empty() {
+                return Err(ScriptError::UnbalancedConditional);
+            }
+            vexec.last_mut().map(|last| *last = !*last)?;
+        }
+
+        OP_ENDIF => {
+            if vexec.is_empty() {
+                return Err(ScriptError::UnbalancedConditional);
+            }
+            vexec.pop()?;
+        }
+
+        OP_VERIF | OP_VERNOTIF => return Err(ScriptError::BadOpcode),
+        _ => return Err(ScriptError::DisabledOpcode),
     }
+    Ok(())
+}
 
-    Ok(new_pc)
+fn eval_operation(
+    op: Normal,
+    flags: VerificationFlags,
+    script: &Script,
+    checker: &dyn SignatureChecker,
+    stack: &mut Stack<Vec<u8>>,
+    altstack: &mut Stack<Vec<u8>>,
+    op_count: &mut u8,
+) -> Result<(), ScriptError> {
+    let require_minimal = flags.contains(VerificationFlags::MinimalData);
+
+    match op {
+        //
+        // Control
+        //
+        OP_NOP => (),
+
+        OP_CHECKLOCKTIMEVERIFY => {
+            // This was originally OP_NOP2 but has been repurposed
+            // for OP_CHECKLOCKTIMEVERIFY. So, we should act based
+            // on whether or not CLTV has been activated in a soft
+            // fork.
+            if !flags.contains(VerificationFlags::CHECKLOCKTIMEVERIFY) {
+                if flags.contains(VerificationFlags::DiscourageUpgradableNOPs) {
+                    return Err(ScriptError::DiscourageUpgradableNOPs);
+                }
+            } else {
+                if stack.is_empty() {
+                    return Err(ScriptError::InvalidStackOperation);
+                }
+
+                // Note that elsewhere numeric opcodes are limited to
+                // operands in the range -2**31+1 to 2**31-1, however it is
+                // legal for opcodes to produce results exceeding that
+                // range. This limitation is implemented by `ScriptNum`'s
+                // default 4-byte limit.
+                //
+                // If we kept to that limit we'd have a year 2038 problem,
+                // even though the `lock_time` field in transactions
+                // themselves is u32 which only becomes meaningless
+                // after the year 2106.
+                //
+                // Thus as a special case we tell `ScriptNum` to accept up
+                // to 5-byte bignums, which are good until 2**39-1, well
+                // beyond the 2**32-1 limit of the `lock_time` field itself.
+                let lock_time = ScriptNum::new(stack.rget(0)?, require_minimal, Some(5))
+                    .map_err(ScriptError::ScriptNumError)?;
+
+                // In the rare event that the argument may be < 0 due to
+                // some arithmetic being done first, you can always use
+                // 0 MAX CHECKLOCKTIMEVERIFY.
+                if lock_time < ScriptNum::ZERO {
+                    return Err(ScriptError::NegativeLockTime);
+                }
+
+                // Actually compare the specified lock time with the transaction.
+                if !checker.check_lock_time(&lock_time) {
+                    return Err(ScriptError::UnsatisfiedLockTime);
+                }
+            }
+        }
+
+        OP_NOP1 | OP_NOP3 | OP_NOP4 | OP_NOP5 | OP_NOP6 | OP_NOP7 | OP_NOP8 | OP_NOP9
+        | OP_NOP10 => {
+            // Do nothing, though if the caller wants to prevent people from using
+            // these NOPs (as part of a standard tx rule, for example) they can
+            // enable `DiscourageUpgradableNOPs` to turn these opcodes into errors.
+            if flags.contains(VerificationFlags::DiscourageUpgradableNOPs) {
+                return Err(ScriptError::DiscourageUpgradableNOPs);
+            }
+        }
+
+        OP_VERIFY => {
+            // (true -- ) or
+            // (false -- false) and return
+            if stack.is_empty() {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            let value = cast_to_bool(stack.rget(0)?);
+            if value {
+                stack.pop()?;
+            } else {
+                return Err(ScriptError::Verify);
+            }
+        }
+
+        OP_RETURN => return Err(ScriptError::OpReturn),
+
+        //
+        // Stack ops
+        //
+        OP_TOALTSTACK => {
+            if stack.is_empty() {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            altstack.push(stack.rget(0)?.clone());
+            stack.pop()?;
+        }
+
+        OP_FROMALTSTACK => {
+            if altstack.is_empty() {
+                return Err(ScriptError::InvalidAltstackOperation);
+            }
+            stack.push(altstack.rget(0)?.clone());
+            altstack.pop()?;
+        }
+
+        OP_2DROP => {
+            if stack.len() < 2 {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+
+            stack.pop()?;
+            stack.pop()?;
+        }
+
+        OP_2DUP => {
+            // (x1 x2 -- x1 x2 x1 x2)
+            if stack.len() < 2 {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            let vch1 = stack.rget(1)?.clone();
+            let vch2 = stack.rget(0)?.clone();
+            stack.push(vch1);
+            stack.push(vch2);
+        }
+
+        OP_3DUP => {
+            // (x1 x2 x3 -- x1 x2 x3 x1 x2 x3)
+            if stack.len() < 3 {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            let vch1 = stack.rget(2)?.clone();
+            let vch2 = stack.rget(1)?.clone();
+            let vch3 = stack.rget(0)?.clone();
+            stack.push(vch1);
+            stack.push(vch2);
+            stack.push(vch3);
+        }
+
+        OP_2OVER => {
+            // (x1 x2 x3 x4 -- x1 x2 x3 x4 x1 x2)
+            if stack.len() < 4 {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            let vch1 = stack.rget(3)?.clone();
+            let vch2 = stack.rget(2)?.clone();
+            stack.push(vch1);
+            stack.push(vch2);
+        }
+
+        OP_2ROT => {
+            // (x1 x2 x3 x4 x5 x6 -- x3 x4 x5 x6 x1 x2)
+            if stack.len() < 6 {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            let vch1 = stack.rget(5)?.clone();
+            let vch2 = stack.rget(4)?.clone();
+            stack.rerase(5, Some(3))?;
+            stack.push(vch1);
+            stack.push(vch2);
+        }
+
+        OP_2SWAP => {
+            // (x1 x2 x3 x4 -- x3 x4 x1 x2)
+            if stack.len() < 4 {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            stack.rswap(3, 1)?;
+            stack.rswap(2, 0)?;
+        }
+
+        OP_IFDUP => {
+            // (x - 0 | x x)
+            if stack.is_empty() {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            let vch = stack.rget(0)?;
+            if cast_to_bool(vch) {
+                stack.push(vch.to_vec())
+            }
+        }
+
+        OP_DEPTH => {
+            // -- stacksize
+            let bn = ScriptNum::try_from(stack.len()).map_err(|_| ScriptError::StackSize)?;
+            stack.push(bn.getvch())
+        }
+
+        OP_DROP => {
+            // (x -- )
+            if stack.is_empty() {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            stack.pop()?;
+        }
+
+        OP_DUP => {
+            // (x -- x x)
+            if stack.is_empty() {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+
+            let vch = stack.rget(0)?;
+            stack.push(vch.clone());
+        }
+
+        OP_NIP => {
+            // (x1 x2 -- x2)
+            if stack.len() < 2 {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            stack.rerase(1, None)?;
+        }
+
+        OP_OVER => {
+            // (x1 x2 -- x1 x2 x1)
+            if stack.len() < 2 {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            let vch = stack.rget(1)?;
+            stack.push(vch.clone());
+        }
+
+        OP_PICK | OP_ROLL => {
+            // (xn ... x2 x1 x0 n - xn ... x2 x1 x0 xn)
+            // (xn ... x2 x1 x0 n - ... x2 x1 x0 xn)
+            if stack.len() < 2 {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            let n = u16::try_from(ScriptNum::new(stack.rget(0)?, require_minimal, None)?)
+                .map_err(|_| ScriptError::InvalidStackOperation)?;
+            stack.pop()?;
+            if usize::from(n) >= stack.len() {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            let vch: ValType = stack.rget(n.into())?.clone();
+            if op == OP_ROLL {
+                stack.rerase(n.into(), None)?;
+            }
+            stack.push(vch)
+        }
+
+        OP_ROT => {
+            // (x1 x2 x3 -- x2 x3 x1)
+            //  x2 x1 x3  after first swap
+            //  x2 x3 x1  after second swap
+            if stack.len() < 3 {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            stack.rswap(2, 1)?;
+            stack.rswap(1, 0)?;
+        }
+
+        OP_SWAP => {
+            // (x1 x2 -- x2 x1)
+            if stack.len() < 2 {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            stack.rswap(1, 0)?;
+        }
+
+        OP_TUCK => {
+            // (x1 x2 -- x2 x1 x2)
+            if stack.len() < 2 {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            let vch = stack.rget(0)?.clone();
+            stack.rinsert(1, vch)?
+        }
+
+        OP_SIZE => {
+            // (in -- in size)
+            if stack.is_empty() {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            let bn = ScriptNum::try_from(stack.rget(0)?.len())
+                .expect("stack element size fits in ScriptNum");
+            stack.push(bn.getvch())
+        }
+
+        //
+        // Bitwise logic
+        //
+        OP_EQUAL | OP_EQUALVERIFY => {
+            // (x1 x2 - bool)
+            if stack.len() < 2 {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            let vch1 = stack.rget(1)?.clone();
+            let vch2 = stack.rget(0)?.clone();
+            let equal = vch1 == vch2;
+            stack.pop()?;
+            stack.pop()?;
+            stack.push(if equal { VCH_TRUE.to_vec() } else { VCH_FALSE });
+            if op == OP_EQUALVERIFY {
+                if equal {
+                    stack.pop()?;
+                } else {
+                    return Err(ScriptError::EqualVerify);
+                }
+            }
+        }
+
+        //
+        // Numeric
+        //
+        OP_1ADD | OP_1SUB | OP_NEGATE | OP_ABS | OP_NOT | OP_0NOTEQUAL => {
+            // (in -- out)
+            if stack.is_empty() {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            let mut bn = ScriptNum::new(stack.rget(0)?, require_minimal, None)?;
+            match op {
+                OP_1ADD => bn = bn + ScriptNum::ONE,
+                OP_1SUB => bn = bn - ScriptNum::ONE,
+                OP_NEGATE => bn = -bn,
+                OP_ABS => {
+                    if bn < ScriptNum::ZERO {
+                        bn = -bn
+                    }
+                }
+                OP_NOT => bn = ScriptNum::from(bn == ScriptNum::ZERO),
+                OP_0NOTEQUAL => bn = ScriptNum::from(bn != ScriptNum::ZERO),
+                _ => panic!("invalid opcode"),
+            }
+            stack.pop()?;
+            stack.push(bn.getvch())
+        }
+
+        OP_ADD
+        | OP_SUB
+        | OP_BOOLAND
+        | OP_BOOLOR
+        | OP_NUMEQUAL
+        | OP_NUMEQUALVERIFY
+        | OP_NUMNOTEQUAL
+        | OP_LESSTHAN
+        | OP_GREATERTHAN
+        | OP_LESSTHANOREQUAL
+        | OP_GREATERTHANOREQUAL
+        | OP_MIN
+        | OP_MAX => {
+            // (x1 x2 -- out)
+            if stack.len() < 2 {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            let bn1 = ScriptNum::new(stack.rget(1)?, require_minimal, None)?;
+            let bn2 = ScriptNum::new(stack.rget(0)?, require_minimal, None)?;
+            let bn = match op {
+                OP_ADD => bn1 + bn2,
+
+                OP_SUB => bn1 - bn2,
+
+                OP_BOOLAND => ScriptNum::from(bn1 != ScriptNum::ZERO && bn2 != ScriptNum::ZERO),
+                OP_BOOLOR => ScriptNum::from(bn1 != ScriptNum::ZERO || bn2 != ScriptNum::ZERO),
+                OP_NUMEQUAL => ScriptNum::from(bn1 == bn2),
+                OP_NUMEQUALVERIFY => ScriptNum::from(bn1 == bn2),
+                OP_NUMNOTEQUAL => ScriptNum::from(bn1 != bn2),
+                OP_LESSTHAN => ScriptNum::from(bn1 < bn2),
+                OP_GREATERTHAN => ScriptNum::from(bn1 > bn2),
+                OP_LESSTHANOREQUAL => ScriptNum::from(bn1 <= bn2),
+                OP_GREATERTHANOREQUAL => ScriptNum::from(bn1 >= bn2),
+                OP_MIN => {
+                    if bn1 < bn2 {
+                        bn1
+                    } else {
+                        bn2
+                    }
+                }
+                OP_MAX => {
+                    if bn1 > bn2 {
+                        bn1
+                    } else {
+                        bn2
+                    }
+                }
+                _ => panic!("invalid opcode"),
+            };
+            stack.pop()?;
+            stack.pop()?;
+            stack.push(bn.getvch());
+
+            if op == OP_NUMEQUALVERIFY {
+                if cast_to_bool(stack.rget(0)?) {
+                    stack.pop()?;
+                } else {
+                    return Err(ScriptError::NumEqualVerify);
+                }
+            }
+        }
+
+        OP_WITHIN => {
+            // (x min max -- out)
+            if stack.len() < 3 {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            let bn1 = ScriptNum::new(stack.rget(2)?, require_minimal, None)?;
+            let bn2 = ScriptNum::new(stack.rget(1)?, require_minimal, None)?;
+            let bn3 = ScriptNum::new(stack.rget(0)?, require_minimal, None)?;
+            let value = bn2 <= bn1 && bn1 < bn3;
+            stack.pop()?;
+            stack.pop()?;
+            stack.pop()?;
+            stack.push(if value { VCH_TRUE.to_vec() } else { VCH_FALSE })
+        }
+
+        //
+        // Crypto
+        //
+        OP_RIPEMD160 | OP_SHA1 | OP_SHA256 | OP_HASH160 | OP_HASH256 => {
+            // (in -- hash)
+            if stack.is_empty() {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            let vch = stack.rget(0)?;
+            let mut vch_hash = vec![];
+            if op == OP_RIPEMD160 {
+                vch_hash = Ripemd160::digest(vch).to_vec();
+            } else if op == OP_SHA1 {
+                let mut hasher = Sha1::new();
+                hasher.update(vch);
+                vch_hash = hasher.finalize().to_vec();
+            } else if op == OP_SHA256 {
+                vch_hash = Sha256::digest(vch).to_vec();
+            } else if op == OP_HASH160 {
+                vch_hash = Ripemd160::digest(Sha256::digest(vch)).to_vec();
+            } else if op == OP_HASH256 {
+                vch_hash = Sha256::digest(Sha256::digest(vch)).to_vec();
+            }
+            stack.pop()?;
+            stack.push(vch_hash)
+        }
+
+        OP_CHECKSIG | OP_CHECKSIGVERIFY => {
+            // (sig pubkey -- bool)
+            if stack.len() < 2 {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+
+            let vch_sig = stack.rget(1)?.clone();
+            let vch_pub_key = stack.rget(0)?.clone();
+
+            let success = is_sig_valid(&vch_sig, &vch_pub_key, flags, script, checker)?;
+
+            stack.pop()?;
+            stack.pop()?;
+            stack.push(if success {
+                VCH_TRUE.to_vec()
+            } else {
+                VCH_FALSE
+            });
+            if op == OP_CHECKSIGVERIFY {
+                if success {
+                    stack.pop()?;
+                } else {
+                    return Err(ScriptError::CheckSigVerify);
+                }
+            }
+        }
+
+        OP_CHECKMULTISIG | OP_CHECKMULTISIGVERIFY => {
+            // ([sig ...] num_of_signatures [pubkey ...] num_of_pubkeys -- bool)
+
+            // NB: This is guaranteed u8-safe, because we are limited to 20 keys and
+            //     20 signatures, plus a couple other fields. u8 also gives us total
+            //     conversions to the other types we deal with here (`isize` and `i64`).
+            let mut i: u8 = 0;
+            if stack.len() < i.into() {
+                return Err(ScriptError::InvalidStackOperation);
+            };
+
+            let mut keys_count = u8::try_from(ScriptNum::new(
+                stack.rget(i.into())?,
+                require_minimal,
+                None,
+            )?)
+            .map_err(|_| ScriptError::PubKeyCount)?;
+            if keys_count > 20 {
+                return Err(ScriptError::PubKeyCount);
+            };
+            assert!(*op_count <= 201);
+            *op_count += keys_count;
+            if *op_count > 201 {
+                return Err(ScriptError::OpCount);
+            };
+            i += 1;
+            let mut ikey = i;
+            i += keys_count;
+            if stack.len() <= i.into() {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+
+            let mut sigs_count = u8::try_from(ScriptNum::new(
+                stack.rget(i.into())?,
+                require_minimal,
+                None,
+            )?)
+            .map_err(|_| ScriptError::SigCount)?;
+            if sigs_count > keys_count {
+                return Err(ScriptError::SigCount);
+            };
+            assert!(i <= 21);
+            i += 1;
+            let mut isig = i;
+            i += sigs_count;
+            if stack.len() <= i.into() {
+                return Err(ScriptError::InvalidStackOperation);
+            };
+
+            let mut success = true;
+            while success && sigs_count > 0 {
+                let vch_sig: &ValType = stack.rget(isig.into())?;
+                let vch_pub_key: &ValType = stack.rget(ikey.into())?;
+
+                // Note how this makes the exact order of pubkey/signature evaluation
+                // distinguishable by CHECKMULTISIG NOT if the STRICTENC flag is set.
+                // See the script_(in)valid tests for details.
+                if is_sig_valid(vch_sig, vch_pub_key, flags, script, checker)? {
+                    isig += 1;
+                    sigs_count -= 1;
+                }
+                ikey += 1;
+                keys_count -= 1;
+
+                // If there are more signatures left than keys left,
+                // then too many signatures have failed. Exit early,
+                // without checking any further signatures.
+                if sigs_count > keys_count {
+                    success = false;
+                };
+            }
+
+            // Clean up stack of actual arguments
+            for _ in 1..i {
+                stack.pop()?;
+            }
+
+            // A bug causes CHECKMULTISIG to consume one extra argument
+            // whose contents were not checked in any way.
+            //
+            // Unfortunately this is a potential source of mutability,
+            // so optionally verify it is exactly equal to zero prior
+            // to removing it from the stack.
+            if stack.is_empty() {
+                return Err(ScriptError::InvalidStackOperation);
+            }
+            if flags.contains(VerificationFlags::NullDummy) && !stack.rget(0)?.is_empty() {
+                return Err(ScriptError::SigNullDummy);
+            }
+            stack.pop()?;
+
+            stack.push(if success {
+                VCH_TRUE.to_vec()
+            } else {
+                VCH_FALSE
+            });
+
+            if op == OP_CHECKMULTISIGVERIFY {
+                if success {
+                    stack.pop()?;
+                } else {
+                    return Err(ScriptError::CheckMultisigVerify);
+                }
+            }
+        }
+
+        _ => {
+            return Err(ScriptError::BadOpcode);
+        }
+    }
+    Ok(())
 }
 
 pub trait StepFn {
