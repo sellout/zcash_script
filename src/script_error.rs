@@ -1,3 +1,5 @@
+use std::num::TryFromIntError;
+
 use secp256k1;
 
 /// Things that can go wrong when constructing a `HashType` from bit flags.
@@ -27,11 +29,11 @@ pub enum ScriptError {
 
     // Max sizes
     ScriptSize,
-    PushSize,
+    PushSize(Option<TryFromIntError>),
     OpCount,
-    StackSize,
+    StackSize(Option<TryFromIntError>),
     SigCount,
-    PubKeyCount,
+    PubKeyCount(Option<TryFromIntError>),
 
     // Failed verify operations
     Verify,
@@ -41,8 +43,8 @@ pub enum ScriptError {
     NumEqualVerify,
 
     // Logical/Format/Canonical errors
-    BadOpcode,
-    DisabledOpcode,
+    BadOpcode(Option<u8>),
+    DisabledOpcode(u8),
     InvalidStackOperation,
     InvalidAltstackOperation,
     UnbalancedConditional,
