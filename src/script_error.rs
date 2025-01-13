@@ -32,7 +32,7 @@ pub enum ScriptError {
     PushSize(Option<TryFromIntError>),
     OpCount,
     StackSize(Option<TryFromIntError>),
-    SigCount,
+    SigCount(Option<TryFromIntError>),
     PubKeyCount(Option<TryFromIntError>),
 
     // Failed verify operations
