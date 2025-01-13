@@ -13,6 +13,7 @@ mod script;
 pub mod script_error;
 mod zcash_script;
 
+mod pattern;
 use std::os::raw::{c_int, c_uint, c_void};
 
 use tracing::warn;
@@ -282,29 +283,35 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
-    use super::{testing::*, *};
+    use super::{pattern::*, script::*, testing::*, *};
     use hex::FromHex;
     use proptest::prelude::*;
 
     lazy_static::lazy_static! {
-        pub static ref SCRIPT_PUBKEY: Vec<u8> = <Vec<u8>>::from_hex("a914c117756dcbe144a12a7c33a77cfa81aa5aeeb38187").unwrap();
-        pub static ref SCRIPT_SIG: Vec<u8> = <Vec<u8>>::from_hex("00483045022100d2ab3e6258fe244fa442cfb38f6cef9ac9a18c54e70b2f508e83fa87e20d040502200eead947521de943831d07a350e45af8e36c2166984a8636f0a8811ff03ed09401473044022013e15d865010c257eef133064ef69a780b4bc7ebe6eda367504e806614f940c3022062fdbc8c2d049f91db2042d6c9771de6f1ef0b3b1fea76c1ab5542e44ed29ed8014c69522103b2cc71d23eb30020a4893982a1e2d352da0d20ee657fa02901c432758909ed8f21029d1e9a9354c0d2aee9ffd0f0cea6c39bbf98c4066cf143115ba2279d0ba7dabe2103e32096b63fd57f3308149d238dcbb24d8d28aad95c0e4e74e3e5e6a11b61bcc453ae").expect("Block bytes are in valid hex representation");
+        pub static ref SCRIPT_PUBKEY: Vec<u8> = Script::serialize(&pay_to_script_hash(&<[u8; 0x14]>::from_hex("c117756dcbe144a12a7c33a77cfa81aa5aeeb381").expect("valid hash")));
+        pub static ref SCRIPT_SIG: Vec<u8> = Script::serialize(&[
+            push_num(0),
+            push_vec(&<[u8; 0x48]>::from_hex("3045022100d2ab3e6258fe244fa442cfb38f6cef9ac9a18c54e70b2f508e83fa87e20d040502200eead947521de943831d07a350e45af8e36c2166984a8636f0a8811ff03ed09401").expect("valid sig")),
+            push_vec(&<[u8; 0x47]>::from_hex("3044022013e15d865010c257eef133064ef69a780b4bc7ebe6eda367504e806614f940c3022062fdbc8c2d049f91db2042d6c9771de6f1ef0b3b1fea76c1ab5542e44ed29ed801").expect("valid sig")),
+            push_script(&check_multisig(
+                2,
+                &[
+                    &<[u8; 0x21]>::from_hex("03b2cc71d23eb30020a4893982a1e2d352da0d20ee657fa02901c432758909ed8f").expect("valid key"),
+                    &<[u8; 0x21]>::from_hex("029d1e9a9354c0d2aee9ffd0f0cea6c39bbf98c4066cf143115ba2279d0ba7dabe").expect("valid key"),
+                    &<[u8; 0x21]>::from_hex("03e32096b63fd57f3308149d238dcbb24d8d28aad95c0e4e74e3e5e6a11b61bcc4").expect("valid key")
+                ],
+                false))
+        ].map(Opcode::PushValue));
     }
 
     fn sighash(_script_code: &[u8], _hash_type: HashType) -> Option<[u8; 32]> {
-        hex::decode("e8c7bdac77f6bb1f3aba2eaa1fada551a9c8b3b5ecd1ef86e6e58a5f1aab952c")
-            .unwrap()
-            .as_slice()
-            .first_chunk::<32>()
-            .copied()
+        <[u8; 32]>::from_hex("e8c7bdac77f6bb1f3aba2eaa1fada551a9c8b3b5ecd1ef86e6e58a5f1aab952c")
+            .ok()
     }
 
     fn invalid_sighash(_script_code: &[u8], _hash_type: HashType) -> Option<[u8; 32]> {
-        hex::decode("08c7bdac77f6bb1f3aba2eaa1fada551a9c8b3b5ecd1ef86e6e58a5f1aab952c")
-            .unwrap()
-            .as_slice()
-            .first_chunk::<32>()
-            .copied()
+        <[u8; 32]>::from_hex("08c7bdac77f6bb1f3aba2eaa1fada551a9c8b3b5ecd1ef86e6e58a5f1aab952c")
+            .ok()
     }
 
     fn missing_sighash(_script_code: &[u8], _hash_type: HashType) -> Option<[u8; 32]> {

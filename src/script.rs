@@ -22,6 +22,15 @@ pub enum Opcode {
     Operation(Operation),
 }
 
+impl From<&Opcode> for Vec<u8> {
+    fn from(value: &Opcode) -> Self {
+        match value {
+            Opcode::PushValue(v) => v.into(),
+            Opcode::Operation(v) => vec![(*v).into()],
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum LargeValue {
     // push value
@@ -33,6 +42,34 @@ pub enum LargeValue {
 
 use LargeValue::*;
 
+impl From<&LargeValue> for Vec<u8> {
+    fn from(value: &LargeValue) -> Self {
+        let bytes = value.value();
+        match value {
+            PushdataBytelength(_) => {
+                [ScriptNum(bytes.len().try_into().unwrap()).getvch(), bytes].concat()
+            }
+            OP_PUSHDATA1(_) => [
+                vec![0x4c],
+                ScriptNum(bytes.len().try_into().unwrap()).getvch(),
+                bytes,
+            ]
+            .concat(),
+            OP_PUSHDATA2(_) => [
+                vec![0x4d],
+                ScriptNum(bytes.len().try_into().unwrap()).getvch(),
+                bytes,
+            ]
+            .concat(),
+            OP_PUSHDATA4(_) => [
+                vec![0x4e],
+                ScriptNum(bytes.len().try_into().unwrap()).getvch(),
+                bytes,
+            ]
+            .concat(),
+        }
+    }
+}
 impl LargeValue {
     pub fn value(&self) -> Vec<u8> {
         match self {
@@ -131,6 +168,25 @@ pub enum Operation {
     Normal(Normal),
 }
 
+impl From<Operation> for u8 {
+    fn from(value: Operation) -> Self {
+        match value {
+            Operation::Control(v) => v.into(),
+            Operation::Disabled(v) => v.into(),
+            Operation::Normal(v) => v.into(),
+        }
+    }
+}
+
+impl From<&PushValue> for Vec<u8> {
+    fn from(value: &PushValue) -> Self {
+        match value {
+            PushValue::SmallValue(v) => vec![(*v).into()],
+            PushValue::LargeValue(v) => v.into(),
+        }
+    }
+}
+
 enum_from_primitive! {
 /// Control operations are evaluated regardless of whether the current branch is active.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -143,6 +199,13 @@ pub enum Control {
     OP_ELSE = 0x67,
     OP_ENDIF = 0x68,
 }
+}
+
+impl From<Control> for u8 {
+    fn from(value: Control) -> Self {
+        // This is how you get the discriminant, but using `as` everywhere is too much code smell
+        value as u8
+    }
 }
 
 enum_from_primitive! {
@@ -173,6 +236,13 @@ pub enum Disabled {
     //crypto
     OP_CODESEPARATOR = 0xab,
 }
+}
+
+impl From<Disabled> for u8 {
+    fn from(value: Disabled) -> Self {
+        // This is how you get the discriminant, but using `as` everywhere is too much code smell
+        value as u8
+    }
 }
 
 enum_from_primitive! {
@@ -269,6 +339,13 @@ pub enum Normal {
 use Normal::*;
 
 pub const OP_CHECKLOCKTIMEVERIFY: Normal = OP_NOP2;
+
+impl From<Normal> for u8 {
+    fn from(value: Normal) -> Self {
+        // This is how you get the discriminant, but using `as` everywhere is too much code smell
+        value as u8
+    }
+}
 
 impl TryFrom<u8> for Operation {
     type Error = ();
@@ -535,6 +612,12 @@ impl Script<'_> {
                 }
             }
         }
+    }
+
+    pub fn serialize(script: &[Opcode]) -> Vec<u8> {
+        script
+            .iter()
+            .fold(Vec::new(), |acc, op| [acc, op.into()].concat())
     }
 
     /** Encode/decode small integers: */
