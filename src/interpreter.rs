@@ -428,7 +428,7 @@ fn eval_opcode(
                     Ok(())
                 }
             } else {
-                Err(ScriptError::PushSize)
+                Err(ScriptError::PushSize(None))
             }
         }
         Opcode::Operation(op) => {
@@ -446,9 +446,9 @@ fn eval_opcode(
                             Ok(())
                         }
                     }
-                    Operation::Unknown(_) => {
+                    Operation::Unknown(byte) => {
                         if should_exec(vexec) {
-                            Err(ScriptError::BadOpcode)
+                            Err(ScriptError::BadOpcode(Some(byte)))
                         } else {
                             Ok(())
                         }
@@ -462,7 +462,7 @@ fn eval_opcode(
     .and_then(|()| {
         // Size limits
         if stack.len() + altstack.len() > 1000 {
-            Err(ScriptError::StackSize)
+            Err(ScriptError::StackSize(None))
         } else {
             Ok(())
         }
@@ -477,7 +477,7 @@ fn eval_push_value(
     if require_minimal && !pv.is_minimal_push() {
         Err(ScriptError::MinimalData)
     } else {
-        pv.value().map_or(Err(ScriptError::BadOpcode), |v| {
+        pv.value().map_or(Err(ScriptError::BadOpcode(None)), |v| {
             stack.push(v);
             Ok(())
         })
@@ -527,8 +527,8 @@ fn eval_control(
             vexec.pop()?;
         }
 
-        OP_VERIF | OP_VERNOTIF => return Err(ScriptError::BadOpcode),
-        _ => return Err(ScriptError::DisabledOpcode),
+        OP_VERIF | OP_VERNOTIF => return Err(ScriptError::BadOpcode(Some(op.into()))),
+        _ => return Err(ScriptError::DisabledOpcode(Some(op.into()))),
     }
     Ok(())
 }
@@ -718,7 +718,8 @@ fn eval_operation(
 
         OP_DEPTH => {
             // -- stacksize
-            let bn = ScriptNum::try_from(stack.len()).map_err(|_| ScriptError::StackSize)?;
+            let bn = ScriptNum::try_from(stack.len())
+                .map_err(|err| ScriptError::StackSize(Some(err)))?;
             stack.push(bn.getvch())
         }
 
@@ -1010,9 +1011,9 @@ fn eval_operation(
                 require_minimal,
                 None,
             )?)
-            .map_err(|_| ScriptError::PubKeyCount)?;
+            .map_err(|err| ScriptError::PubKeyCount(Some(err)))?;
             if keys_count > 20 {
-                return Err(ScriptError::PubKeyCount);
+                return Err(ScriptError::PubKeyCount(None));
             };
             assert!(*op_count <= 201);
             *op_count += keys_count;
@@ -1031,9 +1032,9 @@ fn eval_operation(
                 require_minimal,
                 None,
             )?)
-            .map_err(|_| ScriptError::SigCount)?;
+            .map_err(|err| ScriptError::SigCount(Some(err)))?;
             if sigs_count > keys_count {
-                return Err(ScriptError::SigCount);
+                return Err(ScriptError::SigCount(None));
             };
             assert!(i <= 21);
             i += 1;
@@ -1101,7 +1102,7 @@ fn eval_operation(
         }
 
         _ => {
-            return Err(ScriptError::BadOpcode);
+            return Err(ScriptError::BadOpcode(Some(op.into())));
         }
     }
     Ok(())
