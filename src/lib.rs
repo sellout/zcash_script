@@ -11,10 +11,12 @@ pub mod cxx;
 mod external;
 mod interpreter;
 pub mod op;
+mod opcode;
 pub mod pattern;
 pub mod pv;
 pub mod script;
 pub mod script_error;
+mod scriptnum;
 mod zcash_script;
 
 use std::os::raw::{c_int, c_uint, c_void};
@@ -304,8 +306,9 @@ pub mod testing {
     use super::*;
     use crate::{
         interpreter::{State, StepFn},
+        opcode::{operation::Normal, Opcode},
         pattern::*,
-        script::{Normal, Opcode, Script},
+        script::{self, Script},
     };
     use hex::FromHex;
 

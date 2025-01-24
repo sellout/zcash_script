@@ -5,9 +5,23 @@ use secp256k1::ecdsa;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
-use super::external::pubkey::PubKey;
-use super::script::{Control::*, Normal::*, *};
-use super::script_error::*;
+use crate::{
+    external::pubkey::PubKey,
+    opcode::{
+        operation::{
+            Control::{self, *},
+            Normal::{self, *},
+        },
+        Opcode, Operation, PushValue,
+    },
+    script::{self, Script},
+    script_error::*,
+    scriptnum::ScriptNum,
+};
+
+// Threshold for lock_time: below this value it is interpreted as block number,
+// otherwise as UNIX timestamp.
+pub const LOCKTIME_THRESHOLD: ScriptNum = ScriptNum(500_000_000); // Tue Nov  5 00:53:20 1985 UTC
 
 /// The ways in which a transparent input may commit to the transparent outputs of its
 /// transaction.
@@ -407,7 +421,7 @@ fn eval_opcode(
 
     (match opcode {
         Opcode::PushValue(pv) => {
-            if pv.value().map_or(0, |v| v.len()) <= MAX_SCRIPT_ELEMENT_SIZE {
+            if pv.value().map_or(0, |v| v.len()) <= script::MAX_SCRIPT_ELEMENT_SIZE {
                 if should_exec(vexec) {
                     eval_push_value(&pv, flags.contains(VerificationFlags::MinimalData), stack)
                 } else {
@@ -1135,7 +1149,7 @@ where
     F: StepFn,
 {
     // There's a limit on how large scripts can be.
-    if script.0.len() > MAX_SCRIPT_SIZE {
+    if script.0.len() > script::MAX_SCRIPT_SIZE {
         return Err(ScriptError::ScriptSize);
     }
 
