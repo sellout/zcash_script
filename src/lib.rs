@@ -9,11 +9,13 @@ extern crate enum_primitive;
 mod cxx;
 mod external;
 mod interpreter;
+mod opcode;
+mod pattern;
 mod script;
 pub mod script_error;
+mod scriptnum;
 mod zcash_script;
 
-mod pattern;
 use std::os::raw::{c_int, c_uint, c_void};
 
 use tracing::warn;
@@ -283,7 +285,7 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
-    use super::{pattern::*, script::*, testing::*, *};
+    use super::{opcode::*, pattern::*, script::*, testing::*, *};
     use hex::FromHex;
     use proptest::prelude::*;
 

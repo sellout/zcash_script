@@ -7,8 +7,10 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
 use super::external::pubkey::PubKey;
-use super::script::{Control::*, Normal::*, *};
+use super::opcode::{Control::*, Normal::*, *};
+use super::script::*;
 use super::script_error::*;
+use super::scriptnum::*;
 
 /// The ways in which a transparent input may commit to the transparent outputs of its
 /// transaction.

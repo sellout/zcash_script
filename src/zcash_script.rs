@@ -3,6 +3,7 @@ use std::num::TryFromIntError;
 use super::interpreter::*;
 use super::script::*;
 use super::script_error::*;
+use super::scriptnum::*;
 
 /// This maps to `zcash_script_error_t`, but most of those cases aren’t used any more. This only
 /// replicates the still-used cases, and then an `Unknown` bucket for anything else that might
@@ -184,6 +185,7 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::{testing::*, *};
+    use crate::opcode::*;
     use crate::pattern::*;
     use hex::FromHex;
     use proptest::prelude::*;
