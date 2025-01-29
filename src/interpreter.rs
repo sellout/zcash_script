@@ -135,7 +135,7 @@ pub trait SignatureChecker {
         false
     }
 
-    fn check_lock_time(&self, _lock_time: &ScriptNum) -> bool {
+    fn check_lock_time(&self, _lock_time: i64) -> bool {
         false
     }
 }
@@ -146,7 +146,9 @@ impl SignatureChecker for BaseSignatureChecker {}
 
 pub struct CallbackTransactionSignatureChecker<'a> {
     pub sighash: SighashCalculator<'a>,
-    pub lock_time: &'a ScriptNum,
+    /// This is stored as an `i64` instead of the `u32` used by transactions to avoid partial
+    /// conversions when reading from the stack.
+    pub lock_time: i64,
     pub is_final: bool,
 }
 
@@ -450,8 +452,6 @@ pub fn eval_script(
     flags: VerificationFlags,
     checker: &dyn SignatureChecker,
 ) -> Result<bool, ScriptError> {
-    let bn_zero = ScriptNum::from(0);
-    let bn_one = ScriptNum::from(1);
     let vch_false: ValType = vec![];
     let vch_true: ValType = vec![1];
 
@@ -499,8 +499,8 @@ pub fn eval_script(
                         OP_1NEGATE | OP_1 | OP_2 | OP_3 | OP_4 | OP_5 | OP_6 | OP_7 | OP_8
                         | OP_9 | OP_10 | OP_11 | OP_12 | OP_13 | OP_14 | OP_15 | OP_16 => {
                             // ( -- value)
-                            let bn = ScriptNum::from(u8::from(pv)) - u8::from(OP_RESERVED).into();
-                            stack.push_back(bn.getvch());
+                            let bn = i64::from(u8::from(pv)) - i64::from(u8::from(OP_RESERVED));
+                            stack.push_back(serialize_num(bn));
                             // The result of these opcodes should always be the minimal way to push the data
                             // they push, so no need for a CheckMinimalPush here.
                         }
@@ -579,18 +579,17 @@ pub fn eval_script(
                                 // Thus as a special case we tell `ScriptNum` to accept up
                                 // to 5-byte bignums, which are good until 2**39-1, well
                                 // beyond the 2**32-1 limit of the `lock_time` field itself.
-                                let lock_time =
-                                    ScriptNum::new(stack.top(-1)?, require_minimal, Some(5))?;
+                                let lock_time = parse_num(stack.top(-1)?, require_minimal, Some(5))?;
 
                                 // In the rare event that the argument may be < 0 due to
                                 // some arithmetic being done first, you can always use
                                 // 0 MAX CHECKLOCKTIMEVERIFY.
-                                if lock_time < bn_zero {
+                                if lock_time < 0 {
                                     return set_error(ScriptError::NegativeLockTime);
                                 }
 
                                 // Actually compare the specified lock time with the transaction.
-                                if !checker.check_lock_time(&lock_time) {
+                                if !checker.check_lock_time(lock_time) {
                                     return set_error(ScriptError::UnsatisfiedLockTime);
                                 }
                             }
@@ -751,8 +750,8 @@ pub fn eval_script(
 
                         OP_DEPTH => {
                             // -- stacksize
-                            let bn = ScriptNum::try_from(stack.size()).map_err(|_| ScriptError::StackSize)?;
-                            stack.push_back(bn.getvch())
+                            let bn = i64::try_from(stack.size()).map_err(|_| ScriptError::StackSize)?;
+                            stack.push_back(serialize_num(bn))
                         }
 
                         OP_DROP => {
@@ -799,7 +798,7 @@ pub fn eval_script(
                                 return set_error(ScriptError::InvalidStackOperation);
                             }
                             let n =
-                                u16::try_from(ScriptNum::new(stack.top(-1)?, require_minimal, None)?)
+                                u16::try_from(parse_num(stack.top(-1)?, require_minimal, None)?)
                                 .map_err(|_| ScriptError::InvalidStackOperation)?;
                             stack.pop()?;
                             if usize::from(n) >= stack.size() {
@@ -849,8 +848,8 @@ pub fn eval_script(
                                 return set_error(ScriptError::InvalidStackOperation);
                             }
                             let bn =
-                                ScriptNum::try_from(stack.top(-1)?.len()).map_err(|_| ScriptError::PushSize)?;
-                            stack.push_back(bn.getvch())
+                                i64::try_from(stack.top(-1)?.len()).map_err(|_| ScriptError::PushSize)?;
+                            stack.push_back(serialize_num(bn))
                         }
 
 
@@ -901,18 +900,18 @@ pub fn eval_script(
                             if stack.size() < 1 {
                                 return set_error(ScriptError::InvalidStackOperation);
                             }
-                            let mut bn = ScriptNum::new(stack.top(-1)?, require_minimal, None)?;
+                            let mut bn = ScriptNum::new(stack.top(-1)?, require_minimal)?;
                             match op {
-                                OP_1ADD => bn = bn + bn_one,
-                                OP_1SUB => bn = bn - bn_one,
+                                OP_1ADD => bn = bn + ScriptNum::one,
+                                OP_1SUB => bn = bn - ScriptNum::one,
                                 OP_NEGATE => bn = -bn,
                                 OP_ABS => {
-                                    if bn < bn_zero {
+                                    if bn < ScriptNum::zero {
                                         bn = -bn
                                     }
                                 }
-                                OP_NOT => bn = ScriptNum::from(bn == bn_zero),
-                                OP_0NOTEQUAL => bn = ScriptNum::from(bn != bn_zero),
+                                OP_NOT => bn = ScriptNum::from(bn == ScriptNum::zero),
+                                OP_0NOTEQUAL => bn = ScriptNum::from(bn != ScriptNum::zero),
                                 _ => panic!("invalid opcode"),
                             }
                             stack.pop()?;
@@ -936,8 +935,8 @@ pub fn eval_script(
                             if stack.size() < 2 {
                                 return set_error(ScriptError::InvalidStackOperation);
                             }
-                            let bn1 = ScriptNum::new(stack.top(-2)?, require_minimal, None)?;
-                            let bn2 = ScriptNum::new(stack.top(-1)?, require_minimal, None)?;
+                            let bn1 = ScriptNum::new(stack.top(-2)?, require_minimal)?;
+                            let bn2 = ScriptNum::new(stack.top(-1)?, require_minimal)?;
                             let bn = match op {
                                 OP_ADD =>
                                     bn1 + bn2,
@@ -945,8 +944,8 @@ pub fn eval_script(
                                 OP_SUB =>
                                     bn1 - bn2,
 
-                                OP_BOOLAND => ScriptNum::from(bn1 != bn_zero && bn2 != bn_zero),
-                                OP_BOOLOR => ScriptNum::from(bn1 != bn_zero || bn2 != bn_zero),
+                                OP_BOOLAND => ScriptNum::from(bn1 != ScriptNum::zero && bn2 != ScriptNum::zero),
+                                OP_BOOLOR => ScriptNum::from(bn1 != ScriptNum::zero || bn2 != ScriptNum::zero),
                                 OP_NUMEQUAL => ScriptNum::from(bn1 == bn2),
                                 OP_NUMEQUALVERIFY => ScriptNum::from(bn1 == bn2),
                                 OP_NUMNOTEQUAL => ScriptNum::from(bn1 != bn2),
@@ -976,9 +975,9 @@ pub fn eval_script(
                             if stack.size() < 3 {
                                 return set_error(ScriptError::InvalidStackOperation);
                             }
-                            let bn1 = ScriptNum::new(stack.top(-3)?, require_minimal, None)?;
-                            let bn2 = ScriptNum::new(stack.top(-2)?, require_minimal, None)?;
-                            let bn3 = ScriptNum::new(stack.top(-1)?, require_minimal, None)?;
+                            let bn1 = parse_num(stack.top(-3)?, require_minimal, None)?;
+                            let bn2 = parse_num(stack.top(-2)?, require_minimal, None)?;
+                            let bn3 = parse_num(stack.top(-1)?, require_minimal, None)?;
                             let value = bn2 <= bn1 && bn1 < bn3;
                             stack.pop()?;
                             stack.pop()?;
@@ -1067,7 +1066,7 @@ pub fn eval_script(
                             };
 
                             let mut keys_count =
-                                u8::try_from(ScriptNum::new(stack.top(-isize::from(i))?, require_minimal, None)?)
+                                u8::try_from(parse_num(stack.top(-isize::from(i))?, require_minimal, None)?)
                                   .map_err(|_| ScriptError::PubKeyCount)?;
                             if keys_count > 20 {
                                 return set_error(ScriptError::PubKeyCount);
@@ -1084,7 +1083,7 @@ pub fn eval_script(
                             }
 
                             let mut sigs_count =
-                                u8::try_from(ScriptNum::new(stack.top(-isize::from(i))?, require_minimal, None)?)
+                                u8::try_from(parse_num(stack.top(-isize::from(i))?, require_minimal, None)?)
                                   .map_err(|_| ScriptError::SigCount)?;
                             if sigs_count > keys_count {
                                 return set_error(ScriptError::SigCount);
@@ -1227,7 +1226,7 @@ impl SignatureChecker for CallbackTransactionSignatureChecker<'_> {
         }
     }
 
-    fn check_lock_time(&self, lock_time: &ScriptNum) -> bool {
+    fn check_lock_time(&self, lock_time: i64) -> bool {
         // There are two times of nLockTime: lock-by-blockheight
         // and lock-by-blocktime, distinguished by whether
         // nLockTime < LOCKTIME_THRESHOLD.
@@ -1235,8 +1234,8 @@ impl SignatureChecker for CallbackTransactionSignatureChecker<'_> {
         // We want to compare apples to apples, so fail the script
         // unless the type of nLockTime being tested is the same as
         // the nLockTime in the transaction.
-        if *self.lock_time < LOCKTIME_THRESHOLD && *lock_time >= LOCKTIME_THRESHOLD
-            || *self.lock_time >= LOCKTIME_THRESHOLD && *lock_time < LOCKTIME_THRESHOLD
+        if self.lock_time < LOCKTIME_THRESHOLD && lock_time >= LOCKTIME_THRESHOLD
+            || self.lock_time >= LOCKTIME_THRESHOLD && lock_time < LOCKTIME_THRESHOLD
             // Now that we know we're comparing apples-to-apples, the
             // comparison is a simple numeric one.
             || lock_time > self.lock_time

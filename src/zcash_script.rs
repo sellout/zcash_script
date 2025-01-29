@@ -76,14 +76,13 @@ impl ZcashScript for RustInterpreter {
         script_sig: &[u8],
         flags: VerificationFlags,
     ) -> Result<(), Error> {
-        let lock_time_num = lock_time.into();
         verify_script(
             &Script(script_sig),
             &Script(script_pub_key),
             flags,
             &CallbackTransactionSignatureChecker {
                 sighash,
-                lock_time: &lock_time_num,
+                lock_time: lock_time.into(),
                 is_final,
             },
         )
