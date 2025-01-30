@@ -1,10 +1,5 @@
 #![allow(non_camel_case_types)]
 
-use std::{
-    num::TryFromIntError,
-    ops::{Add, Neg, Sub},
-};
-
 use enum_primitive::FromPrimitive;
 
 use super::script_error::*;
@@ -382,67 +377,6 @@ pub fn serialize_num(value: i64) -> Vec<u8> {
     }
 
     result
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct ScriptNum(i64);
-
-impl ScriptNum {
-    pub const zero: ScriptNum = ScriptNum(0);
-    pub const one: ScriptNum = ScriptNum(1);
-
-    pub fn new(vch: &Vec<u8>, require_minimal: bool) -> Result<Self, ScriptNumError> {
-        parse_num(vch, require_minimal, None).map(ScriptNum)
-    }
-
-    pub fn getvch(&self) -> Vec<u8> {
-        serialize_num(self.0)
-    }
-}
-
-/// TODO: This instance will be obsolete if we convert bool directly to a `Vec<u8>`, which is also
-///       more efficient.
-impl From<bool> for ScriptNum {
-    fn from(value: bool) -> Self {
-        ScriptNum(value.into())
-    }
-}
-
-impl Add for ScriptNum {
-    type Output = Self;
-
-    fn add(self, other: Self) -> Self {
-        let rhs = other.0;
-        assert!(
-            rhs == 0
-                || (rhs > 0 && self.0 <= i64::MAX - rhs)
-                || (rhs < 0 && self.0 >= i64::MIN - rhs)
-        );
-        Self(self.0 + rhs)
-    }
-}
-
-impl Sub for ScriptNum {
-    type Output = Self;
-
-    fn sub(self, other: Self) -> Self {
-        let rhs = other.0;
-        assert!(
-            rhs == 0
-                || (rhs > 0 && self.0 >= i64::MIN + rhs)
-                || (rhs < 0 && self.0 <= i64::MAX + rhs)
-        );
-        Self(self.0 - rhs)
-    }
-}
-
-impl Neg for ScriptNum {
-    type Output = Self;
-
-    fn neg(self) -> Self {
-        assert!(self.0 != i64::MIN);
-        Self(-self.0)
-    }
 }
 
 /** Serialized script, used inside transaction inputs and outputs */
