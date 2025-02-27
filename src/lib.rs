@@ -10,8 +10,10 @@ extern crate enum_primitive;
 pub mod cxx;
 mod external;
 pub mod interpreter;
+pub mod op;
 pub mod pattern;
-mod script;
+pub mod pv;
+pub mod script;
 pub mod script_error;
 mod zcash_script;
 
