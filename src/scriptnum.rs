@@ -9,7 +9,7 @@ impl ScriptNum {
     const DEFAULT_MAX_NUM_SIZE: usize = 4;
 
     pub fn new(
-        vch: &Vec<u8>,
+        vch: &[u8],
         require_minimal: bool,
         max_num_size: Option<usize>,
     ) -> Result<Self, ScriptNumError> {
@@ -104,7 +104,7 @@ impl ScriptNum {
         result
     }
 
-    fn set_vch(vch: &Vec<u8>) -> Result<i64, ScriptNumError> {
+    fn set_vch(vch: &[u8]) -> Result<i64, ScriptNumError> {
         match vch.last() {
             None => Ok(0),
             Some(vch_back) => {
