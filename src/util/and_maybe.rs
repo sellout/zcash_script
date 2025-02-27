@@ -57,3 +57,11 @@ impl<T, U> AndMaybe<T, U> {
         )
     }
 }
+
+// /// Applies a function that expects an array to any slice.
+// pub fn perform_as_array<T, F, R>(slice: &[T], f: F) -> R
+// where
+//     for<const N: usize> F: Fn(&[T; N]) -> R,
+// {
+//     f(unsafe { &*slice.as_ptr() })
+// }

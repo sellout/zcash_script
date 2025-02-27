@@ -1,15 +1,12 @@
 use crate::{
+    op,
     opcode::{
         self,
-        Control::*,
         LargeValue::*,
-        Normal::*,
-        Opcode::{self, Operation, PushValue},
-        Operation::{Control, Normal},
-        PushValue::{LargeValue, SmallValue},
-        SmallValue::*,
-        OP_CHECKLOCKTIMEVERIFY,
+        Opcode::{self, PushValue},
+        PushValue::LargeValue,
     },
+    pv,
     script::{self, Parsable},
     scriptnum::*,
 };
@@ -26,7 +23,7 @@ pub enum IdentifiedScriptPubKey {
 impl IdentifiedScriptPubKey {
     pub fn identify(script: &[Opcode]) -> Option<Self> {
         match script {
-            [Operation(Normal(OP_DUP)), Operation(Normal(OP_HASH160)), PushValue(LargeValue(PushdataBytelength(hash))), Operation(Normal(OP_EQUALVERIFY)), Operation(Normal(OP_CHECKSIG))] =>
+            [op::DUP, op::HASH160, PushValue(LargeValue(PushdataBytelength(hash))), op::EQUALVERIFY, op::CHECKSIG] =>
             {
                 hash[..]
                     // FIXME: This should use `as_array`, but currently only in nightly.
@@ -34,8 +31,7 @@ impl IdentifiedScriptPubKey {
                     .cloned()
                     .map(Self::P2PKH)
             }
-            [Operation(Normal(OP_HASH160)), PushValue(LargeValue(PushdataBytelength(hash))), Operation(Normal(OP_EQUAL))] =>
-            {
+            [op::HASH160, PushValue(LargeValue(PushdataBytelength(hash))), op::EQUAL] => {
                 hash[..]
                     // FIXME: This should use `as_array`, but currently only in nightly.
                     .first_chunk::<0x14>()
@@ -49,17 +45,15 @@ impl IdentifiedScriptPubKey {
     pub fn serialize(&self) -> Vec<Opcode> {
         match self {
             Self::P2PKH(key_id) => vec![
-                Operation(Normal(OP_DUP)),
-                Operation(Normal(OP_HASH160)),
+                op::DUP,
+                op::HASH160,
                 PushValue(push_vec(&key_id[..])),
-                Operation(Normal(OP_EQUALVERIFY)),
-                Operation(Normal(OP_CHECKSIG)),
+                op::EQUALVERIFY,
+                op::CHECKSIG,
             ],
-            Self::P2SH(script_id) => vec![
-                Operation(Normal(OP_HASH160)),
-                PushValue(push_vec(&script_id[..])),
-                Operation(Normal(OP_EQUAL)),
-            ],
+            Self::P2SH(script_id) => {
+                vec![op::HASH160, PushValue(push_vec(&script_id[..])), op::EQUAL]
+            }
         }
     }
 }
@@ -71,14 +65,10 @@ enum Pattern {
 
 // Named Patterns (not that we can do much with these yet) – should enable via macros
 
-pub const EMPTY_STACK_CHECK: [Opcode; 3] = [
-    Operation(Normal(OP_DEPTH)),
-    PushValue(SmallValue(OP_0)),
-    Operation(Normal(OP_EQUAL)),
-];
+pub const EMPTY_STACK_CHECK: [Opcode; 3] = [op::DEPTH, op::_0, op::EQUAL];
 
 pub fn ignored_value(v: &[u8]) -> [Opcode; 2] {
-    [PushValue(push_vec(v)), Operation(Normal(OP_DROP))]
+    [PushValue(push_vec(v)), op::DROP]
 }
 
 // pub const combined_multisig: Vec<Opcode> = t_of_n_multisigverify + t_of_n_multisig;
@@ -86,18 +76,11 @@ pub fn ignored_value(v: &[u8]) -> [Opcode; 2] {
 // abstractions
 
 pub fn branch(thn: &[Opcode], els: &[Opcode]) -> Vec<Opcode> {
-    [
-        &[Operation(Control(OP_IF))],
-        thn,
-        &[Operation(Control(OP_ELSE))],
-        els,
-        &[Operation(Control(OP_ENDIF))],
-    ]
-    .concat()
+    [&[op::IF], thn, &[op::ELSE], els, &[op::ENDIF]].concat()
 }
 
 ///
-/// Example: if_else(size_check(20), [], [OP_RETURN])
+/// Example: if_else(size_check(20), [], [op::RETURN])
 pub fn if_else(cond: &[Opcode], thn: &[Opcode], els: &[Opcode]) -> Vec<Opcode> {
     let mut vec = cond.to_vec();
     vec.extend(branch(thn, els));
@@ -116,11 +99,11 @@ pub fn check_multisig(sig_count: u8, pks: &[&[u8]], verify: bool) -> Vec<Opcode>
                     .try_into()
                     .expect("Should not be more than 20 pubkeys"),
             )),
-            Operation(Normal(if verify {
-                OP_CHECKMULTISIGVERIFY
+            if verify {
+                op::CHECKMULTISIGVERIFY
             } else {
-                OP_CHECKMULTISIG
-            })),
+                op::CHECKMULTISIG
+            },
         ],
     ]
     .concat()
@@ -129,33 +112,26 @@ pub fn check_multisig(sig_count: u8, pks: &[&[u8]], verify: bool) -> Vec<Opcode>
 pub fn equals(expected: opcode::PushValue, verify: bool) -> [Opcode; 2] {
     [
         PushValue(expected),
-        Operation(Normal(if verify { OP_EQUALVERIFY } else { OP_EQUAL })),
+        if verify { op::EQUALVERIFY } else { op::EQUAL },
     ]
 }
 
 pub fn size_check(expected: u32, verify: bool) -> Vec<Opcode> {
-    [
-        &[Operation(Normal(OP_SIZE))],
-        &equals(push_num(expected.into()), verify)[..],
-    ]
-    .concat()
+    [&[op::SIZE], &equals(push_num(expected.into()), verify)[..]].concat()
 }
 
 pub fn check_lock_time_verify(lt: &[u8]) -> [Opcode; 2] {
-    [
-        PushValue(push_vec(lt)),
-        Operation(Normal(OP_CHECKLOCKTIMEVERIFY)),
-    ]
+    [PushValue(push_vec(lt)), op::CHECKLOCKTIMEVERIFY]
 }
 
 pub fn htlc(pos_check: &[Opcode], lt: &[u8], hash: &[u8; 20]) -> Vec<Opcode> {
     let mut cltv = check_lock_time_verify(lt).to_vec();
-    cltv.push(Operation(Normal(OP_DROP)));
+    cltv.push(op::DROP);
     [
         &branch(pos_check, &cltv),
-        &[Operation(Normal(OP_DUP)), Operation(Normal(OP_HASH160))][..],
+        &[op::DUP, op::HASH160][..],
         &equals(push_vec(hash), true),
-        &[Operation(Normal(OP_CHECKSIG))],
+        &[op::CHECKSIG],
     ]
     .concat()
 }
@@ -177,62 +153,58 @@ pub fn push_script(script: &script::PubKey) -> opcode::PushValue {
 ///       then return in `Option`, but that mucks with the ergonomics.
 pub fn push_vec(v: &[u8]) -> opcode::PushValue {
     match v {
-        [] => SmallValue(OP_0),
+        [] => pv::_0,
         [byte] => match byte {
-            0x81 => SmallValue(OP_1NEGATE),
-            1 => SmallValue(OP_1),
-            2 => SmallValue(OP_2),
-            3 => SmallValue(OP_3),
-            4 => SmallValue(OP_4),
-            5 => SmallValue(OP_5),
-            6 => SmallValue(OP_6),
-            7 => SmallValue(OP_7),
-            8 => SmallValue(OP_8),
-            9 => SmallValue(OP_9),
-            10 => SmallValue(OP_10),
-            11 => SmallValue(OP_11),
-            12 => SmallValue(OP_12),
-            13 => SmallValue(OP_13),
-            14 => SmallValue(OP_14),
-            15 => SmallValue(OP_15),
-            16 => SmallValue(OP_16),
-            _ => LargeValue(PushdataBytelength(v.to_vec())),
+            0x81 => pv::_1NEGATE,
+            1 => pv::_1,
+            2 => pv::_2,
+            3 => pv::_3,
+            4 => pv::_4,
+            5 => pv::_5,
+            6 => pv::_6,
+            7 => pv::_7,
+            8 => pv::_8,
+            9 => pv::_9,
+            10 => pv::_10,
+            11 => pv::_11,
+            12 => pv::_12,
+            13 => pv::_13,
+            14 => pv::_14,
+            15 => pv::_15,
+            16 => pv::_16,
+            _ => pv::pushdata_bytelength(v.to_vec()),
         },
         _ => {
             let len = u32::try_from(v.len()).expect("Vec is too large to be Script data.");
             let vec = v.to_vec();
-            LargeValue(if len < 0x4f {
-                PushdataBytelength(vec)
+            if len < 0x4f {
+                pv::pushdata_bytelength(vec)
             } else if len <= u8::MAX.into() {
-                OP_PUSHDATA1(vec)
+                pv::pushdata1(vec)
             } else if len <= u16::MAX.into() {
-                OP_PUSHDATA2(vec)
+                pv::pushdata2(vec)
             } else {
-                OP_PUSHDATA4(vec)
-            })
+                pv::pushdata4(vec)
+            }
         }
     }
 }
 
 pub fn pay_to_pubkey(pubkey: &[u8]) -> [Opcode; 2] {
-    [PushValue(push_vec(pubkey)), Operation(Normal(OP_CHECKSIG))]
+    [PushValue(push_vec(pubkey)), op::CHECKSIG]
 }
 
 pub fn pay_to_pubkey_hash(hash: &[u8; 20]) -> Vec<Opcode> {
     [
-        &[Operation(Normal(OP_DUP)), Operation(Normal(OP_HASH160))],
+        &[op::DUP, op::HASH160],
         &equals(push_vec(hash), true)[..],
-        &[Operation(Normal(OP_CHECKSIG))],
+        &[op::CHECKSIG],
     ]
     .concat()
 }
 
 pub fn pay_to_script_hash(hash: &[u8; 20]) -> Vec<Opcode> {
-    [
-        &[Operation(Normal(OP_HASH160))],
-        &equals(push_vec(hash), false)[..],
-    ]
-    .concat()
+    [&[op::HASH160], &equals(push_vec(hash), false)[..]].concat()
 }
 
 pub fn sha256_htlc(sha: &[u8; 32], lt: &[u8], hash: &[u8; 20]) -> Vec<Opcode> {
@@ -240,20 +212,12 @@ pub fn sha256_htlc(sha: &[u8; 32], lt: &[u8], hash: &[u8; 20]) -> Vec<Opcode> {
 }
 
 pub fn sha256_hashlock(sha: &[u8; 32], verify: bool) -> Vec<Opcode> {
-    [
-        &[Operation(Normal(OP_SHA256))],
-        &equals(push_vec(sha), verify)[..],
-    ]
-    .concat()
+    [&[op::SHA256], &equals(push_vec(sha), verify)[..]].concat()
 }
 
 pub fn hash160_htlc(hash1: &[u8; 20], lt: &[u8], hash2: &[u8; 20]) -> Vec<Opcode> {
     htlc(
-        &[
-            &[Operation(Normal(OP_HASH160))],
-            &equals(push_vec(hash1), true)[..],
-        ]
-        .concat()[..],
+        &[&[op::HASH160], &equals(push_vec(hash1), true)[..]].concat()[..],
         lt,
         hash2,
     )

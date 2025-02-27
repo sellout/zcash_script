@@ -5,6 +5,7 @@ mod parser;
 
 use crate::{
     interpreter::*,
+    op,
     opcode::{
         LargeValue::*,
         Normal::*,
@@ -167,7 +168,7 @@ impl PubKey {
     /// Returns true iff this script is P2SH.
     pub fn is_pay_to_script_hash(&self) -> bool {
         match &(self.0)[..] {
-            [Opcode::Operation(Operation::Normal(OP_HASH160)), Opcode::PushValue(PushValue::LargeValue(PushdataBytelength(v))), Opcode::Operation(Operation::Normal(OP_EQUAL))] => {
+            [op::HASH160, Opcode::PushValue(PushValue::LargeValue(PushdataBytelength(v))), op::EQUAL] => {
                 v.len() == 0x14
             }
             _ => false,
