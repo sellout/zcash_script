@@ -12,8 +12,8 @@ mod interpreter;
 pub mod opcode;
 pub mod pattern;
 pub mod script;
-pub mod script_error;
 mod scriptnum;
+mod util;
 mod zcash_script;
 
 use std::os::raw::{c_int, c_uint, c_void};
@@ -21,7 +21,7 @@ use std::os::raw::{c_int, c_uint, c_void};
 use tracing::warn;
 
 pub use cxx::*;
-pub use interpreter::{HashType, Serializable, SignedOutputs, VerificationFlags};
+pub use interpreter::{HashType, SignedOutputs, VerificationFlags};
 pub use zcash_script::*;
 
 /// A tag to indicate that the C++ implementation of zcash_script should be used.
@@ -189,7 +189,7 @@ pub fn normalize_error(err: Error) -> Error {
 /// contains another `Result` that indicates the final result of the script. If they didn’t behave
 /// identically, the `Err` contains a pair of `Result`s, one for each implementation. If the
 /// diverging step succeeded for an implementation, its `Ok` will contain the resulting state from
-/// that step. If it failed, it wil contain the `ScriptError`.
+/// that step. If it failed, it wil contain the `script::Error`.
 // pub fn deep_check_verify<T: ZcashScript, U: ZcashScript>(
 //         sighash: SighashCalculator,
 //         lock_time: i64,
@@ -198,7 +198,7 @@ pub fn normalize_error(err: Error) -> Error {
 //         script_sig: &[u8],
 //         flags: VerificationFlags,
 // ) -> (NonEmpty<State>,
-//       Result<Result<(), ScriptError>, (Result<State, ScriptError>, Result<State, ScriptError>)>) {
+//       Result<Result<(), script::Error>, (Result<State, script::Error>, Result<State, script::Error>)>) {
 //     let lock_time_num = ScriptNum(lock_time);
 //     verify_script(
 //         &Script(script_sig),
@@ -280,22 +280,27 @@ pub mod testing {
     }
 
     /// A `usize` one larger than the longest allowed script, for testing bounds.
-    pub const OVERFLOW_SCRIPT_SIZE: usize = script::MAX_SCRIPT_SIZE + 1;
+    pub const OVERFLOW_SCRIPT_SIZE: usize = script::MAX_SIZE + 1;
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{pattern::*, script::*, testing::*, *};
+    use super::{
+        pattern::*,
+        script::{self, Parsable},
+        testing::*,
+        *,
+    };
     use hex::FromHex;
     use proptest::prelude::*;
 
     lazy_static::lazy_static! {
-        pub static ref SCRIPT_PUBKEY: Vec<u8> = ScriptPubKey(pay_to_script_hash(&<[u8; 0x14]>::from_hex("c117756dcbe144a12a7c33a77cfa81aa5aeeb381").expect("valid hash"))).to_bytes();
-        pub static ref SCRIPT_SIG: Vec<u8> = ScriptSig::new(vec![
+        pub static ref SCRIPT_PUBKEY: Vec<u8> = script::PubKey(pay_to_script_hash(&<[u8; 0x14]>::from_hex("c117756dcbe144a12a7c33a77cfa81aa5aeeb381").expect("valid hash"))).to_bytes();
+        pub static ref SCRIPT_SIG: Vec<u8> = script::Sig::new(vec![
             push_num(0),
             push_vec(&<[u8; 0x48]>::from_hex("3045022100d2ab3e6258fe244fa442cfb38f6cef9ac9a18c54e70b2f508e83fa87e20d040502200eead947521de943831d07a350e45af8e36c2166984a8636f0a8811ff03ed09401").expect("valid sig")),
             push_vec(&<[u8; 0x47]>::from_hex("3044022013e15d865010c257eef133064ef69a780b4bc7ebe6eda367504e806614f940c3022062fdbc8c2d049f91db2042d6c9771de6f1ef0b3b1fea76c1ab5542e44ed29ed801").expect("valid sig")),
-            push_script(&ScriptPubKey(check_multisig(
+            push_script(&script::PubKey(check_multisig(
                 2,
                 &[
                     &<[u8; 0x21]>::from_hex("03b2cc71d23eb30020a4893982a1e2d352da0d20ee657fa02901c432758909ed8f").expect("valid key"),
@@ -360,10 +365,7 @@ mod tests {
 
         assert_eq!(ret.0, ret.1.map_err(normalize_error));
         // Checks the Rust result, because we have more information on the Rust side.
-        assert_eq!(
-            ret.1,
-            Err(Error::Ok(Some(script_error::ScriptError::EvalFalse)))
-        );
+        assert_eq!(ret.1, Err(Error::Ok(Some(script::Error::EvalFalse))));
     }
 
     #[test]
@@ -385,10 +387,7 @@ mod tests {
 
         assert_eq!(ret.0, ret.1.map_err(normalize_error));
         // Checks the Rust result, because we have more information on the Rust side.
-        assert_eq!(
-            ret.1,
-            Err(Error::Ok(Some(script_error::ScriptError::EvalFalse)))
-        );
+        assert_eq!(ret.1, Err(Error::Ok(Some(script::Error::EvalFalse))));
     }
 
     proptest! {

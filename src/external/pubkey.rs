@@ -5,8 +5,8 @@ use secp256k1::{ecdsa, Message, PublicKey, Secp256k1};
 pub struct PubKey<'a>(pub &'a [u8]);
 
 impl PubKey<'_> {
-    pub const PUBLIC_KEY_SIZE: usize = 65;
-    pub const COMPRESSED_PUBLIC_KEY_SIZE: usize = 33;
+    pub const SIZE: usize = 65;
+    pub const COMPRESSED_SIZE: usize = 33;
 
     /// Check syntactic correctness.
     ///

@@ -1,18 +1,17 @@
-use crate::interpreter::Serializable;
-use crate::script::*;
-use crate::scriptnum::*;
 use crate::{
-    opcode,
     opcode::{
+        self,
         Control::*,
         LargeValue::*,
         Normal::*,
-        Opcode::{Operation, PushValue},
+        Opcode::{self, Operation, PushValue},
         Operation::{Control, Normal},
         PushValue::{LargeValue, SmallValue},
         SmallValue::*,
-        *,
+        OP_CHECKLOCKTIMEVERIFY,
     },
+    script::{self, Parsable},
+    scriptnum::*,
 };
 
 // Much of this comes from
@@ -65,7 +64,7 @@ impl IdentifiedScriptPubKey {
     }
 }
 
-enum ScriptPattern {
+enum Pattern {
     EmptyStackCheck,
     MultiSig(u8, u8, bool), // `true` means verify
 }
@@ -168,7 +167,7 @@ pub fn push_num(n: i64) -> opcode::PushValue {
 
 /// Produce a minimal `PushValue` that encodes the provided script. This is particularly useful with
 /// P2SH.
-pub fn push_script(script: &ScriptPubKey) -> opcode::PushValue {
+pub fn push_script(script: &script::PubKey) -> opcode::PushValue {
     push_vec(&script.to_bytes())
 }
 

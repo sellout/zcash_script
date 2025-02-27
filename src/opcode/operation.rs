@@ -9,28 +9,28 @@ use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
-use crate::external::pubkey::PubKey;
-use crate::interpreter::*;
-use crate::script_error::*;
-use crate::scriptnum::*;
+use crate::{external::pubkey::PubKey, interpreter::*, script, scriptnum::*};
 
 fn is_compressed_or_uncompressed_pub_key(vch_pub_key: &[u8]) -> bool {
     match vch_pub_key[0] {
-        0x02 | 0x03 => vch_pub_key.len() == PubKey::COMPRESSED_PUBLIC_KEY_SIZE,
-        0x04 => vch_pub_key.len() == PubKey::PUBLIC_KEY_SIZE,
+        0x02 | 0x03 => vch_pub_key.len() == PubKey::COMPRESSED_SIZE,
+        0x04 => vch_pub_key.len() == PubKey::SIZE,
         _ => false, // not a public key
     }
 }
 
-fn decode_signature(vch_sig_in: &[u8], is_strict: bool) -> Result<Option<Signature>, ScriptError> {
+fn decode_signature(
+    vch_sig_in: &[u8],
+    is_strict: bool,
+) -> Result<Option<Signature>, script::Error> {
     match vch_sig_in.split_last() {
         // Empty signature. Not strictly DER encoded, but allowed to provide a compact way to
         // provide an invalid signature for use with CHECK(MULTI)SIG
         None => Ok(None),
         Some((hash_type, vch_sig)) => Ok(Some(Signature {
-            sig: ecdsa::Signature::from_der(vch_sig).map_err(ScriptError::SigDER)?,
+            sig: ecdsa::Signature::from_der(vch_sig).map_err(script::Error::SigDER)?,
             sighash: HashType::from_bits((*hash_type).into(), is_strict)
-                .map_err(ScriptError::SigHashType)?,
+                .map_err(script::Error::SigHashType)?,
         })),
     }
 }
@@ -38,13 +38,13 @@ fn decode_signature(vch_sig_in: &[u8], is_strict: bool) -> Result<Option<Signatu
 fn check_signature_encoding(
     vch_sig: &[u8],
     flags: VerificationFlags,
-) -> Result<Option<Signature>, ScriptError> {
+) -> Result<Option<Signature>, script::Error> {
     decode_signature(vch_sig, flags.contains(VerificationFlags::StrictEnc)).and_then(
         |sig| match sig {
             None => Ok(None),
             Some(sig0) => {
                 if flags.contains(VerificationFlags::LowS) && !PubKey::check_low_s(&sig0.sig) {
-                    Err(ScriptError::SigHighS)
+                    Err(script::Error::SigHighS)
                 } else {
                     Ok(Some(sig0))
                 }
@@ -53,11 +53,11 @@ fn check_signature_encoding(
     )
 }
 
-fn check_pub_key_encoding(vch_sig: &[u8], flags: VerificationFlags) -> Result<(), ScriptError> {
+fn check_pub_key_encoding(vch_sig: &[u8], flags: VerificationFlags) -> Result<(), script::Error> {
     if flags.contains(VerificationFlags::StrictEnc)
         && !is_compressed_or_uncompressed_pub_key(vch_sig)
     {
-        return Err(ScriptError::PubKeyType);
+        return Err(script::Error::PubKeyType);
     };
     Ok(())
 }
@@ -68,7 +68,7 @@ fn is_sig_valid(
     flags: VerificationFlags,
     script: &[u8],
     checker: &dyn SignatureChecker,
-) -> Result<bool, ScriptError> {
+) -> Result<bool, script::Error> {
     let sig = check_signature_encoding(vch_sig, flags)?;
     check_pub_key_encoding(vch_pub_key, flags).map(|()| {
         sig.map(|sig0| checker.check_sig(&sig0, &vch_pub_key, script))
@@ -91,16 +91,16 @@ fn cast_from_bool(b: bool) -> Vec<u8> {
 
 fn unop<T: Clone>(
     stack: &mut Stack<T>,
-    op: impl Fn(T) -> Result<T, ScriptError>,
-) -> Result<(), ScriptError> {
+    op: impl Fn(T) -> Result<T, script::Error>,
+) -> Result<(), script::Error> {
     let item = stack.pop()?;
     op(item).map(|res| stack.push(res))
 }
 
 fn binop<T: Clone>(
     stack: &mut Stack<T>,
-    op: impl Fn(T, T) -> Result<T, ScriptError>,
-) -> Result<(), ScriptError> {
+    op: impl Fn(T, T) -> Result<T, script::Error>,
+) -> Result<(), script::Error> {
     let x2 = stack.pop()?;
     let x1 = stack.pop()?;
     op(x1, x2).map(|res| stack.push(res))
@@ -125,7 +125,7 @@ impl Evaluable for Operation {
         script: &[u8],
         checker: &dyn SignatureChecker,
         state: &mut State,
-    ) -> Result<(), ScriptError> {
+    ) -> Result<(), script::Error> {
         let stack = &mut state.stack;
         let op_count = &mut state.op_count;
         let vexec = &mut state.vexec;
@@ -145,28 +145,28 @@ impl Evaluable for Operation {
                 }
                 Operation::Unknown(byte) => {
                     if should_exec(vexec) {
-                        Err(ScriptError::BadOpcode(Some(*byte)))
+                        Err(script::Error::BadOpcode(Some(*byte)))
                     } else {
                         Ok(())
                     }
                 }
             }
         } else {
-            Err(ScriptError::OpCount)
+            Err(script::Error::OpCount)
         }
     }
 }
 
-impl Serializable for Operation {
+impl script::Parsable for Operation {
     fn to_bytes(&self) -> Vec<u8> {
         vec![(*self).into()]
     }
 
-    fn from_bytes(script: &[u8]) -> Result<(Self, &[u8]), ScriptError> {
+    fn from_bytes(script: &[u8]) -> Result<(Self, &[u8]), script::Error> {
         script
             .split_first()
             .map(|(&leading_byte, script)| (Operation::from(leading_byte), script))
-            .ok_or(ScriptError::ReadError {
+            .ok_or(script::Error::ReadError {
                 expected_bytes: 1,
                 available_bytes: 0,
             })
@@ -214,7 +214,7 @@ pub enum Control {
     OP_SUBSTR = 0x7f,
     OP_LEFT = 0x80,
     OP_RIGHT = 0x81,
-        // bit logic
+    // bit logic
     OP_INVERT = 0x83,
     OP_AND = 0x84,
     OP_OR = 0x85,
@@ -241,12 +241,12 @@ impl Control {
         &self,
         stack: &mut Stack<Vec<u8>>,
         vexec: &mut Stack<bool>,
-    ) -> Result<(), ScriptError> {
+    ) -> Result<(), script::Error> {
         match self {
             OP_IF | OP_NOTIF => Ok(vexec.push(if should_exec(vexec) {
                 let vch = stack
                     .pop()
-                    .map_err(|_| ScriptError::UnbalancedConditional)?;
+                    .map_err(|_| script::Error::UnbalancedConditional)?;
                 let value = cast_to_bool(&vch);
                 if *self == OP_NOTIF {
                     !value
@@ -259,21 +259,21 @@ impl Control {
 
             OP_ELSE => vexec
                 .pop()
-                .map_err(|_| ScriptError::UnbalancedConditional)
+                .map_err(|_| script::Error::UnbalancedConditional)
                 .map(|last| vexec.push(!last)),
 
             OP_ENDIF => vexec
                 .pop()
-                .map_err(|_| ScriptError::UnbalancedConditional)
+                .map_err(|_| script::Error::UnbalancedConditional)
                 .map(|_| ()),
 
-            OP_VERIF | OP_VERNOTIF => Err(ScriptError::BadOpcode(Some((*self).into()))),
+            OP_VERIF | OP_VERNOTIF => Err(script::Error::BadOpcode(Some((*self).into()))),
 
             // Disabled operations fail whenever they appear in a script, regardless of whether
             // they are on an active branch.
             OP_CAT | OP_SUBSTR | OP_LEFT | OP_RIGHT | OP_INVERT | OP_AND | OP_OR | OP_XOR
             | OP_2MUL | OP_2DIV | OP_MUL | OP_DIV | OP_MOD | OP_LSHIFT | OP_RSHIFT
-            | OP_CODESEPARATOR => Err(ScriptError::DisabledOpcode((*self).into())),
+            | OP_CODESEPARATOR => Err(script::Error::DisabledOpcode((*self).into())),
         }
     }
 }
@@ -389,40 +389,40 @@ impl Normal {
         stack: &mut Stack<Vec<u8>>,
         altstack: &mut Stack<Vec<u8>>,
         op_count: &mut u8,
-    ) -> Result<(), ScriptError> {
+    ) -> Result<(), script::Error> {
         let require_minimal = flags.contains(VerificationFlags::MinimalData);
 
         let unop_num = |stackin: &mut Stack<Vec<u8>>,
                         op: &dyn Fn(ScriptNum) -> ScriptNum|
-         -> Result<(), ScriptError> {
+         -> Result<(), script::Error> {
             unop(stackin, |vch| {
                 ScriptNum::new(&vch, require_minimal, None)
-                    .map_err(ScriptError::ScriptNumError)
+                    .map_err(script::Error::ScriptNumError)
                     .map(|bn| op(bn).getvch())
             })
         };
 
         let binop_num = |stack: &mut Stack<Vec<u8>>,
                          op: &dyn Fn(ScriptNum, ScriptNum) -> Vec<u8>|
-         -> Result<(), ScriptError> {
+         -> Result<(), script::Error> {
             binop(stack, |x1, x2| {
                 let bn2 = ScriptNum::new(&x2, require_minimal, None)
-                    .map_err(ScriptError::ScriptNumError)?;
+                    .map_err(script::Error::ScriptNumError)?;
                 let bn1 = ScriptNum::new(&x1, require_minimal, None)
-                    .map_err(ScriptError::ScriptNumError)?;
+                    .map_err(script::Error::ScriptNumError)?;
                 Ok(op(bn1, bn2))
             })
         };
 
         let magma = |stack: &mut Stack<Vec<u8>>,
                      op: &dyn Fn(ScriptNum, ScriptNum) -> ScriptNum|
-         -> Result<(), ScriptError> {
+         -> Result<(), script::Error> {
             binop_num(stack, &|bn1, bn2| op(bn1, bn2).getvch())
         };
 
         let binrel = |stack: &mut Stack<Vec<u8>>,
                       op: &dyn Fn(ScriptNum, ScriptNum) -> bool|
-         -> Result<(), ScriptError> {
+         -> Result<(), script::Error> {
             binop_num(stack, &|bn1, bn2| cast_from_bool(op(bn1, bn2)))
         };
 
@@ -439,7 +439,7 @@ impl Normal {
                 // fork.
                 if !flags.contains(VerificationFlags::CHECKLOCKTIMEVERIFY) {
                     if flags.contains(VerificationFlags::DiscourageUpgradableNOPs) {
-                        Err(ScriptError::DiscourageUpgradableNOPs)
+                        Err(script::Error::DiscourageUpgradableNOPs)
                     } else {
                         Ok(())
                     }
@@ -459,20 +459,20 @@ impl Normal {
                     // to 5-byte bignums, which are good until 2**39-1, well
                     // beyond the 2**32-1 limit of the `lock_time` field itself.
                     let lock_time = ScriptNum::new(stack.rget(0)?, require_minimal, Some(5))
-                        .map_err(ScriptError::ScriptNumError)?;
+                        .map_err(script::Error::ScriptNumError)?;
 
                     // In the rare event that the argument may be < 0 due to
                     // some arithmetic being done first, you can always use
                     // 0 MAX CHECKLOCKTIMEVERIFY.
                     if lock_time < ScriptNum(0) {
-                        return Err(ScriptError::NegativeLockTime);
+                        return Err(script::Error::NegativeLockTime);
                     }
 
                     // Actually compare the specified lock time with the transaction.
                     if checker.check_lock_time(&lock_time) {
                         Ok(())
                     } else {
-                        Err(ScriptError::UnsatisfiedLockTime)
+                        Err(script::Error::UnsatisfiedLockTime)
                     }
                 }
             }
@@ -483,7 +483,7 @@ impl Normal {
                 // these NOPs (as part of a standard tx rule, for example) they can
                 // enable `DiscourageUpgradableNOPs` to turn these opcodes into errors.
                 if flags.contains(VerificationFlags::DiscourageUpgradableNOPs) {
-                    Err(ScriptError::DiscourageUpgradableNOPs)
+                    Err(script::Error::DiscourageUpgradableNOPs)
                 } else {
                     Ok(())
                 }
@@ -495,11 +495,11 @@ impl Normal {
                 if cast_to_bool(&vch) {
                     Ok(())
                 } else {
-                    Err(ScriptError::Verify)
+                    Err(script::Error::Verify)
                 }
             }),
 
-            OP_RETURN => Err(ScriptError::OpReturn),
+            OP_RETURN => Err(script::Error::OpReturn),
 
             //
             // Stack ops
@@ -508,7 +508,7 @@ impl Normal {
 
             OP_FROMALTSTACK => altstack
                 .pop()
-                .map_err(|_| ScriptError::InvalidAltstackOperation)
+                .map_err(|_| script::Error::InvalidAltstackOperation)
                 .map(|vch| stack.push(vch)),
 
             // (x1 x2 --)
@@ -548,7 +548,7 @@ impl Normal {
 
             // -- stacksize
             OP_DEPTH => i64::try_from(stack.len())
-                .map_err(|err| ScriptError::StackSize(Some(err)))
+                .map_err(|err| script::Error::StackSize(Some(err)))
                 .map(|bn| stack.push(ScriptNum(bn).getvch())),
 
             // (x -- )
@@ -568,10 +568,11 @@ impl Normal {
             OP_PICK | OP_ROLL => stack
                 .pop()
                 .and_then(|vch| {
-                    ScriptNum::new(&vch, require_minimal, None).map_err(ScriptError::ScriptNumError)
+                    ScriptNum::new(&vch, require_minimal, None)
+                        .map_err(script::Error::ScriptNumError)
                 })
                 .and_then(|num| {
-                    usize::try_from(num.getint()).map_err(|_| ScriptError::InvalidStackOperation)
+                    usize::try_from(num.getint()).map_err(|_| script::Error::InvalidStackOperation)
                 })
                 .and_then(|n| {
                     stack.rget(n).cloned().and_then(|vch| {
@@ -598,7 +599,7 @@ impl Normal {
                 .rget(0)?
                 .len()
                 .try_into()
-                .map_err(|err| ScriptError::PushSize(Some(err)))
+                .map_err(|err| script::Error::PushSize(Some(err)))
                 .map(|n| stack.push(ScriptNum(n).getvch())),
 
             //
@@ -613,7 +614,7 @@ impl Normal {
                     if vch1 == vch2 {
                         Ok(())
                     } else {
-                        Err(ScriptError::EqualVerify)
+                        Err(script::Error::EqualVerify)
                     }
                 })
             }),
@@ -638,15 +639,15 @@ impl Normal {
                 let x2 = stack.pop()?;
                 let x1 = stack.pop()?;
                 ScriptNum::new(&x1, require_minimal, None)
-                    .map_err(ScriptError::ScriptNumError)
+                    .map_err(script::Error::ScriptNumError)
                     .and_then(|bn1| {
                         ScriptNum::new(&x2, require_minimal, None)
-                            .map_err(ScriptError::ScriptNumError)
+                            .map_err(script::Error::ScriptNumError)
                             .and_then(|bn2| {
                                 if bn1 == bn2 {
                                     Ok(())
                                 } else {
-                                    Err(ScriptError::NumEqualVerify)
+                                    Err(script::Error::NumEqualVerify)
                                 }
                             })
                     })
@@ -683,7 +684,7 @@ impl Normal {
                                     })
                                 })
                             })
-                            .map_err(ScriptError::ScriptNumError)
+                            .map_err(script::Error::ScriptNumError)
                     })
                 })
             }),
@@ -714,7 +715,7 @@ impl Normal {
                     if success {
                         Ok(())
                     } else {
-                        Err(ScriptError::CheckSigVerify)
+                        Err(script::Error::CheckSigVerify)
                     }
                 } else {
                     Ok(stack.push(cast_from_bool(success)))
@@ -727,17 +728,18 @@ impl Normal {
                     .pop()
                     .and_then(|vch| {
                         ScriptNum::new(&vch, require_minimal, None)
-                            .map_err(ScriptError::ScriptNumError)
+                            .map_err(script::Error::ScriptNumError)
                     })
                     .and_then(|bn| {
-                        u8::try_from(bn.getint()).map_err(|err| ScriptError::PubKeyCount(Some(err)))
+                        u8::try_from(bn.getint())
+                            .map_err(|err| script::Error::PubKeyCount(Some(err)))
                     })?;
                 if keys_count > 20 {
-                    return Err(ScriptError::PubKeyCount(None));
+                    return Err(script::Error::PubKeyCount(None));
                 };
                 *op_count += keys_count;
                 if *op_count > 201 {
-                    return Err(ScriptError::OpCount);
+                    return Err(script::Error::OpCount);
                 };
 
                 let mut keys = VecDeque::with_capacity(keys_count.into());
@@ -749,13 +751,14 @@ impl Normal {
                     .pop()
                     .and_then(|vch| {
                         ScriptNum::new(&vch, require_minimal, None)
-                            .map_err(ScriptError::ScriptNumError)
+                            .map_err(script::Error::ScriptNumError)
                     })
                     .and_then(|bn| {
-                        usize::try_from(bn.getint()).map_err(|err| ScriptError::SigCount(Some(err)))
+                        usize::try_from(bn.getint())
+                            .map_err(|err| script::Error::SigCount(Some(err)))
                     })?;
                 if sigs_count > keys_count.into() {
-                    Err(ScriptError::SigCount(None))
+                    Err(script::Error::SigCount(None))
                 } else {
                     // Note how this makes the exact order of pubkey/signature evaluation
                     // distinguishable by CHECKMULTISIG NOT if the STRICTENC flag is set. See the
@@ -788,12 +791,12 @@ impl Normal {
                     // Unfortunately this is a potential source of mutability, so optionally verify it
                     // is exactly equal to zero prior to removing it from the stack.
                     if !stack.pop()?.is_empty() && flags.contains(VerificationFlags::NullDummy) {
-                        Err(ScriptError::SigNullDummy)
+                        Err(script::Error::SigNullDummy)
                     } else if *self == OP_CHECKMULTISIGVERIFY {
                         if success {
                             Ok(())
                         } else {
-                            Err(ScriptError::CheckMultisigVerify)
+                            Err(script::Error::CheckMultisigVerify)
                         }
                     } else {
                         Ok(stack.push(cast_from_bool(success)))
@@ -801,7 +804,7 @@ impl Normal {
                 }
             }
             OP_VER | OP_RESERVED1 | OP_RESERVED2 => {
-                Err(ScriptError::BadOpcode(Some((*self).into())))
+                Err(script::Error::BadOpcode(Some((*self).into())))
             }
         }
     }

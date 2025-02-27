@@ -2,11 +2,13 @@ use std::num::TryFromIntError;
 
 use secp256k1::ecdsa;
 
-use crate::external::pubkey::PubKey;
-use crate::interpreter::*;
-use crate::script::*;
-use crate::script_error::*;
-use crate::scriptnum::*;
+use crate::{
+    external::pubkey::PubKey,
+    interpreter::*,
+    script::{self, Parsable, Script},
+    scriptnum::*,
+    util::and_maybe::AndMaybe,
+};
 
 /// This maps to `zcash_script_error_t`, but most of those cases aren’t used any more. This only
 /// replicates the still-used cases, and then an `Unknown` bucket for anything else that might
@@ -17,7 +19,7 @@ pub enum Error {
     ///
     /// __NB__: This is in `Option` because this type is used by both the C++ and Rust
     ///         implementations, but the C++ impl doesn’t yet expose the original error.
-    Ok(Option<ScriptError>),
+    Ok(Option<script::Error>),
     /// An exception was caught.
     VerifyScript,
     /// The script size can’t fit in a `u32`, as required by the C++ code.
@@ -109,8 +111,8 @@ impl SignatureChecker for CallbackTransactionSignatureChecker<'_> {
         // We want to compare apples to apples, so fail the script
         // unless the type of nLockTime being tested is the same as
         // the nLockTime in the transaction.
-        if *self.lock_time < LOCKTIME_THRESHOLD && *lock_time >= LOCKTIME_THRESHOLD
-            || *self.lock_time >= LOCKTIME_THRESHOLD && *lock_time < LOCKTIME_THRESHOLD
+        if *self.lock_time < script::LOCKTIME_THRESHOLD && *lock_time >= script::LOCKTIME_THRESHOLD
+            || *self.lock_time >= script::LOCKTIME_THRESHOLD && *lock_time < script::LOCKTIME_THRESHOLD
             // Now that we know we're comparing apples-to-apples, the
             // comparison is a simple numeric one.
             || lock_time > self.lock_time
@@ -141,14 +143,14 @@ impl RustInterpreter {
         script_sig: &[u8],
         flags: VerificationFlags,
         payload: &mut P,
-        stepper: &impl Fn(&dyn Evaluable, &[u8], &mut State, &mut P) -> Result<(), ScriptError>,
+        stepper: &impl Fn(&dyn Evaluable, &[u8], &mut State, &mut P) -> Result<(), script::Error>,
     ) -> Result<(), Error> {
-        ScriptPubKey::from_bytes(script_pub_key)
+        script::PubKey::from_bytes(script_pub_key)
             .and_then(|(pub_key, _)| {
-                script_sigs_from_bytes(script_sig).and_then(|am| match am {
+                script::script_sigs_from_bytes(script_sig).and_then(|am| match am {
                     AndMaybe::Only(sig) => {
                         if flags.contains(VerificationFlags::SigPushOnly) {
-                            Err(ScriptError::SigPushOnly)
+                            Err(script::Error::SigPushOnly)
                         } else {
                             Script { sig, pub_key }.eval(flags, script_pub_key, payload, stepper)
                         }
@@ -165,7 +167,7 @@ impl RustInterpreter {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepResults {
     identical_states: Vec<State>,
-    diverging_result: Option<(Result<State, ScriptError>, Result<State, ScriptError>)>,
+    diverging_result: Option<(Result<State, script::Error>, Result<State, script::Error>)>,
 }
 
 impl StepResults {
@@ -180,7 +182,8 @@ impl StepResults {
 pub fn compare_step<'a>(
     flags: VerificationFlags,
     checker: &'a impl SignatureChecker,
-) -> impl Fn(&dyn Evaluable, &[u8], &mut State, &mut StepResults) -> Result<(), ScriptError> + 'a {
+) -> impl Fn(&dyn Evaluable, &[u8], &mut State, &mut StepResults) -> Result<(), script::Error> + 'a
+{
     move |pc, script, state, payload| {
         let mut right_state = (*state).clone();
         let left = pc.eval(flags, script, checker, state);
@@ -198,7 +201,7 @@ pub fn compare_step<'a>(
                         left.map(|_| state.clone()),
                         right.map(|_| right_state.clone()),
                     ));
-                    Err(ScriptError::UnknownError)
+                    Err(script::Error::UnknownError)
                 }
             }
             // at least one is `Err`
@@ -219,7 +222,7 @@ impl ZcashScript for RustInterpreter {
     /// Returns the number of transparent signature operations in the
     /// transparent inputs and outputs of this transaction.
     fn legacy_sigop_count_script(script: &[u8]) -> Result<u32, Error> {
-        ScriptPubKey::from_bytes(script)
+        script::PubKey::from_bytes(script)
             .map_err(|e| Error::Ok(Some(e)))
             .map(|cscript| cscript.0.get_sig_op_count(false))
     }
@@ -261,7 +264,7 @@ pub mod testing {
     }
 
     /// A `usize` one larger than the longest allowed script, for testing bounds.
-    pub const OVERFLOW_SCRIPT_SIZE: usize = MAX_SCRIPT_SIZE + 1;
+    pub const OVERFLOW_SCRIPT_SIZE: usize = script::MAX_SIZE + 1;
 }
 
 #[cfg(test)]
@@ -272,12 +275,12 @@ mod tests {
     use proptest::prelude::*;
 
     lazy_static::lazy_static! {
-        pub static ref SCRIPT_PUBKEY: Vec<u8> = ScriptPubKey(pay_to_script_hash(&<[u8; 0x14]>::from_hex("c117756dcbe144a12a7c33a77cfa81aa5aeeb381").expect("valid hash"))).to_bytes();
-        pub static ref SCRIPT_SIG: Vec<u8> = ScriptSig::new(vec![
+        pub static ref SCRIPT_PUBKEY: Vec<u8> = script::PubKey(pay_to_script_hash(&<[u8; 0x14]>::from_hex("c117756dcbe144a12a7c33a77cfa81aa5aeeb381").expect("valid hash"))).to_bytes();
+        pub static ref SCRIPT_SIG: Vec<u8> = script::Sig::new(vec![
             push_num(0),
             push_vec(&<[u8; 0x48]>::from_hex("3045022100d2ab3e6258fe244fa442cfb38f6cef9ac9a18c54e70b2f508e83fa87e20d040502200eead947521de943831d07a350e45af8e36c2166984a8636f0a8811ff03ed09401").expect("valid sig")),
             push_vec(&<[u8; 0x47]>::from_hex("3044022013e15d865010c257eef133064ef69a780b4bc7ebe6eda367504e806614f940c3022062fdbc8c2d049f91db2042d6c9771de6f1ef0b3b1fea76c1ab5542e44ed29ed801").expect("valid sig")),
-            push_script(&ScriptPubKey(check_multisig(
+            push_script(&script::PubKey(check_multisig(
                 2,
                 &[
                     &<[u8; 0x21]>::from_hex("03b2cc71d23eb30020a4893982a1e2d352da0d20ee657fa02901c432758909ed8f").expect("valid key"),
@@ -345,7 +348,7 @@ mod tests {
         if res.diverging_result != None {
             panic!("mismatched result: {:?}", res);
         }
-        assert_eq!(ret, Err(Error::Ok(Some(ScriptError::EvalFalse))));
+        assert_eq!(ret, Err(Error::Ok(Some(script::Error::EvalFalse))));
     }
 
     #[test]
@@ -368,7 +371,7 @@ mod tests {
         if res.diverging_result != None {
             panic!("mismatched result: {:?}", res);
         }
-        assert_eq!(ret, Err(Error::Ok(Some(ScriptError::EvalFalse))));
+        assert_eq!(ret, Err(Error::Ok(Some(script::Error::EvalFalse))));
     }
 
     proptest! {

@@ -2,8 +2,10 @@ use std::slice::Iter;
 
 use secp256k1::ecdsa;
 
-use crate::script_error::*;
-use crate::scriptnum::*;
+use crate::{
+    script::{self, error::InvalidHashType},
+    scriptnum::*,
+};
 
 /// The ways in which a transparent input may commit to the transparent outputs of its
 /// transaction.
@@ -154,8 +156,8 @@ pub fn cast_to_bool(vch: &Vec<u8>) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stack<T>(Vec<T>);
 
-fn catch_underflow<U>(opt: Option<U>) -> Result<U, ScriptError> {
-    opt.ok_or(ScriptError::InvalidStackOperation)
+fn catch_underflow<U>(opt: Option<U>) -> Result<U, script::Error> {
+    opt.ok_or(script::Error::InvalidStackOperation)
 }
 
 /// Wraps a Vec (or whatever underlying implementation we choose in a way that matches the C++ impl
@@ -165,33 +167,33 @@ impl<T: Clone> Stack<T> {
         Stack(vec![])
     }
 
-    fn rindex(&self, i: usize) -> Result<usize, ScriptError> {
+    fn rindex(&self, i: usize) -> Result<usize, script::Error> {
         let len = self.0.len();
         if i < len {
             Ok(len - i - 1)
         } else {
-            Err(ScriptError::InvalidStackOperation)
+            Err(script::Error::InvalidStackOperation)
         }
     }
 
-    pub fn rget(&self, i: usize) -> Result<&T, ScriptError> {
+    pub fn rget(&self, i: usize) -> Result<&T, script::Error> {
         self.rindex(i)
             .and_then(|idx| catch_underflow(self.0.get(idx)))
     }
 
-    pub fn push_dup(&mut self, i: usize) -> Result<(), ScriptError> {
+    pub fn push_dup(&mut self, i: usize) -> Result<(), script::Error> {
         self.rget(i).cloned().map(|elem| self.push(elem))
     }
 
-    pub fn swap(&mut self, a: usize, b: usize) -> Result<(), ScriptError> {
+    pub fn swap(&mut self, a: usize, b: usize) -> Result<(), script::Error> {
         if self.len() <= a || self.len() <= b {
-            Err(ScriptError::InvalidStackOperation)
+            Err(script::Error::InvalidStackOperation)
         } else {
             Ok(self.0.swap(a, b))
         }
     }
 
-    pub fn pop(&mut self) -> Result<T, ScriptError> {
+    pub fn pop(&mut self) -> Result<T, script::Error> {
         catch_underflow(self.0.pop())
     }
 
@@ -211,15 +213,15 @@ impl<T: Clone> Stack<T> {
         self.0.iter()
     }
 
-    pub fn last(&self) -> Result<&T, ScriptError> {
+    pub fn last(&self) -> Result<&T, script::Error> {
         catch_underflow(self.0.last())
     }
 
-    pub fn split_last(&self) -> Result<(&T, Stack<T>), ScriptError> {
+    pub fn split_last(&self) -> Result<(&T, Stack<T>), script::Error> {
         catch_underflow(self.0.split_last()).map(|(last, rem)| (last, Stack(rem.to_vec())))
     }
 
-    pub fn erase(&mut self, start: usize, end: Option<usize>) -> Result<(), ScriptError> {
+    pub fn erase(&mut self, start: usize, end: Option<usize>) -> Result<(), script::Error> {
         self.rindex(start).map(|idx| {
             for _ in 0..end.map_or(1, |e| start - e) {
                 self.0.remove(idx);
@@ -227,7 +229,7 @@ impl<T: Clone> Stack<T> {
         })
     }
 
-    pub fn insert(&mut self, i: usize, element: T) -> Result<(), ScriptError> {
+    pub fn insert(&mut self, i: usize, element: T) -> Result<(), script::Error> {
         self.rindex(i).map(|idx| self.0.insert(idx, element))
     }
 }
@@ -262,14 +264,6 @@ pub struct Signature {
     pub sighash: HashType,
 }
 
-/// A prism between a Zcash Script byte stream and a Rust representation.
-pub trait Serializable {
-    fn to_bytes(&self) -> Vec<u8>;
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), ScriptError>
-    where
-        Self: Sized;
-}
-
 pub trait Evaluable {
     fn eval(
         &self,
@@ -277,19 +271,19 @@ pub trait Evaluable {
         script: &[u8],
         checker: &dyn SignatureChecker,
         state: &mut State,
-    ) -> Result<(), ScriptError>;
+    ) -> Result<(), script::Error>;
 }
 
 /// Produces a step evaluator that does nothing but standard evaluation.
 pub fn basic_evaluator<'a>(
     flags: VerificationFlags,
     checker: &'a impl SignatureChecker,
-) -> impl Fn(&dyn Evaluable, &[u8], &mut State, &mut ()) -> Result<(), ScriptError> + 'a {
+) -> impl Fn(&dyn Evaluable, &[u8], &mut State, &mut ()) -> Result<(), script::Error> + 'a {
     move |pc, script: &[u8], state, _payload| {
         pc.eval(flags, script, checker, state).and_then(|()| {
             // Size limits
             if state.stack.len() + state.altstack.len() > 1000 {
-                Err(ScriptError::StackSize(None))
+                Err(script::Error::StackSize(None))
             } else {
                 Ok(())
             }

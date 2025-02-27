@@ -3,15 +3,13 @@
 use enum_primitive::FromPrimitive;
 use serde::{Deserialize, Serialize};
 
-use crate::interpreter::*;
-use crate::script_error::*;
-use crate::scriptnum::*;
+use crate::{interpreter::*, script, scriptnum::*};
 
 pub const MAX_SIZE: usize = 520; // bytes
 
-fn read_le<const N: usize>(script: &[u8]) -> Result<(usize, &[u8]), ScriptError> {
+fn read_le<const N: usize>(script: &[u8]) -> Result<(usize, &[u8]), script::Error> {
     match script.split_first_chunk::<N>() {
-        None => Err(ScriptError::ReadError {
+        None => Err(script::Error::ReadError {
             expected_bytes: N,
             available_bytes: script.len(),
         }),
@@ -26,9 +24,9 @@ fn read_le<const N: usize>(script: &[u8]) -> Result<(usize, &[u8]), ScriptError>
     }
 }
 
-fn read_push_value(script: &[u8], needed_bytes: usize) -> Result<(&[u8], &[u8]), ScriptError> {
+fn read_push_value(script: &[u8], needed_bytes: usize) -> Result<(&[u8], &[u8]), script::Error> {
     match script.split_at_checked(needed_bytes) {
-        None => Err(ScriptError::ReadError {
+        None => Err(script::Error::ReadError {
             expected_bytes: needed_bytes,
             available_bytes: script.len(),
         }),
@@ -36,16 +34,16 @@ fn read_push_value(script: &[u8], needed_bytes: usize) -> Result<(&[u8], &[u8]),
     }
 }
 
-fn read_push_data<const N: usize>(script: &[u8]) -> Result<(&[u8], &[u8]), ScriptError> {
+fn read_push_data<const N: usize>(script: &[u8]) -> Result<(&[u8], &[u8]), script::Error> {
     read_le::<N>(script).and_then(|(size, rest)| read_push_value(rest, size))
 }
 
-impl Serializable for PushValue {
+impl script::Parsable for PushValue {
     fn to_bytes(&self) -> Vec<u8> {
         self.into()
     }
 
-    fn from_bytes(script: &[u8]) -> Result<(Self, &[u8]), ScriptError> {
+    fn from_bytes(script: &[u8]) -> Result<(Self, &[u8]), script::Error> {
         let make_lv = PushValue::LargeValue;
 
         match script.split_first() {
@@ -63,7 +61,7 @@ impl Serializable for PushValue {
                             .map(|(v, rest)| (make_lv(PushdataBytelength(v.to_vec())), rest))
                     } else {
                         SmallValue::from_u8(leading_byte)
-                            .ok_or(ScriptError::SigPushOnly)
+                            .ok_or(script::Error::SigPushOnly)
                             .map(|sv| (PushValue::SmallValue(sv), script))
                     }
                 }
@@ -207,12 +205,12 @@ impl PushValue {
         &self,
         require_minimal: bool,
         stack: &mut Stack<Vec<u8>>,
-    ) -> Result<(), ScriptError> {
+    ) -> Result<(), script::Error> {
         if require_minimal && !self.is_minimal_push() {
-            Err(ScriptError::MinimalData)
+            Err(script::Error::MinimalData)
         } else {
             self.value()
-                .map_or(Err(ScriptError::BadOpcode(None)), |v| Ok(stack.push(v)))
+                .map_or(Err(script::Error::BadOpcode(None)), |v| Ok(stack.push(v)))
         }
     }
 }
@@ -224,7 +222,7 @@ impl Evaluable for PushValue {
         _script: &[u8],
         _checker: &dyn SignatureChecker,
         state: &mut State,
-    ) -> Result<(), ScriptError> {
+    ) -> Result<(), script::Error> {
         self.eval_(
             flags.contains(VerificationFlags::MinimalData),
             &mut state.stack,

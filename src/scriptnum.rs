@@ -1,6 +1,6 @@
 use std::ops::{Add, Neg, Sub};
 
-use super::script_error::*;
+use crate::script::error::*;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct ScriptNum(pub i64);

@@ -1,80 +1,32 @@
 use serde::{Deserialize, Serialize};
 
-use super::opcode::{LargeValue::*, Normal::*, SmallValue::*, *};
-use super::script_error::*;
-use super::scriptnum::*;
-use crate::interpreter::*;
+pub mod error;
+mod parser;
+
+use crate::{
+    interpreter::*,
+    opcode::{
+        LargeValue::*,
+        Normal::*,
+        Opcode, Operation, PushValue,
+        SmallValue::{self, *},
+    },
+    scriptnum::*,
+    util::and_maybe::AndMaybe,
+};
+pub use error::Error;
+pub use parser::Parsable;
 
 /// Maximum script length in bytes
-pub const MAX_SCRIPT_SIZE: usize = 10_000;
+pub const MAX_SIZE: usize = 10_000;
 
 // Threshold for lock_time: below this value it is interpreted as block number,
 // otherwise as UNIX timestamp.
 pub const LOCKTIME_THRESHOLD: ScriptNum = ScriptNum(500_000_000); // Tue Nov  5 00:53:20 1985 UTC
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum AndMaybe<T, U> {
-    Only(T),
-    Indeed(T, U),
-}
-
-impl<T, U> AndMaybe<T, U> {
-    /// Get the ever-present `T` out of the structure.
-    pub fn fst(&self) -> &T {
-        match self {
-            AndMaybe::Only(t) => t,
-            AndMaybe::Indeed(t, _) => t,
-        }
-    }
-
-    /// Get the `U` out of the structure, if there is one.
-    pub fn snd(&self) -> Option<&U> {
-        match self {
-            AndMaybe::Only(_) => None,
-            AndMaybe::Indeed(_, u) => Some(u),
-        }
-    }
-
-    pub fn bimap<T2, U2>(&self, f: impl Fn(&T) -> T2, g: impl Fn(&U) -> U2) -> AndMaybe<T2, U2> {
-        match self {
-            AndMaybe::Only(t) => AndMaybe::Only(f(t)),
-            AndMaybe::Indeed(t, u) => AndMaybe::Indeed(f(t), g(u)),
-        }
-    }
-}
-
-impl<T: Default, U> AndMaybe<T, U> {
-    /// Applicative
-    pub fn pure(u: U) -> Self {
-        AndMaybe::Indeed(T::default(), u)
-    }
-}
-
-impl<T, U> AndMaybe<T, U> {
-    /// This will produce [`Indeed`] only if every element of the array is [`Indeed`], otherwise it
-    /// produces an array of [`Only`] the first values.
-    pub fn sequence(xs: &[Self]) -> AndMaybe<Vec<&T>, Vec<&U>> {
-        let ts = xs.iter().map(|x| x.fst()).collect();
-
-        for x in xs.iter() {
-            match x {
-                AndMaybe::Only(_) => return AndMaybe::Only(ts),
-                AndMaybe::Indeed(_, _) => (),
-            }
-        }
-
-        AndMaybe::Indeed(
-            ts,
-            xs.iter()
-                .map(|x| x.snd().expect("the whole array is `Indeed`"))
-                .collect(),
-        )
-    }
-}
-
 /// This can be specialized in one of two ways:
-/// - with `T` ~ [`PushValue`], this creates a [`ScriptSig`] for a new output; and
-/// - with `T` ~ [`Opcode`], this reads a [`ScriptSig`] from an input on the chain.
+/// - with `T` ~ [`PushValue`], this creates a [`Sig`] for a new output; and
+/// - with `T` ~ [`Opcode`], this reads a [`Sig`] from an input on the chain.
 ///
 /// This is because script_sigs are now required to be push-only, but if we’re spending a pre-v5
 /// output, it’s possible that it contains some operations.
@@ -85,12 +37,12 @@ impl<T, U> AndMaybe<T, U> {
 /// FIXME: Delete this if there are none already on the chain, since a new one can never be
 ///        created.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct ScriptSig<T>(Vec<T>);
+pub struct Sig<T>(Vec<T>);
 
 /// Returns a pre-v5 script_sig, and also a v5+ script_sig, if possible.
 pub fn script_sigs_from_bytes(
     bytes: &[u8],
-) -> Result<AndMaybe<ScriptSig<Opcode>, ScriptSig<PushValue>>, ScriptError> {
+) -> Result<AndMaybe<Sig<Opcode>, Sig<PushValue>>, Error> {
     let mut result = Vec::with_capacity(bytes.len());
     deserialize_vec(&mut result, bytes)?;
     Ok(AndMaybe::sequence(
@@ -103,22 +55,22 @@ pub fn script_sigs_from_bytes(
             .collect::<Vec<AndMaybe<Opcode, PushValue>>>(),
     )
     .bimap(
-        |ts| ScriptSig(ts.iter().map(|x| (*x).clone()).collect()),
-        |us| ScriptSig(us.iter().map(|x| (*x).clone()).collect()),
+        |ts| Sig(ts.iter().map(|x| (*x).clone()).collect()),
+        |us| Sig(us.iter().map(|x| (*x).clone()).collect()),
     ))
 }
 
-impl<T: Evaluable> ScriptSig<T> {
+impl<T: Evaluable> Sig<T> {
     pub fn eval<P>(
         &self,
         stack: Stack<Vec<u8>>,
         script_code: &[u8],
         payload: &mut P,
-        eval_step: &impl Fn(&dyn Evaluable, &[u8], &mut State, &mut P) -> Result<(), ScriptError>,
-    ) -> Result<Stack<Vec<u8>>, ScriptError> {
+        eval_step: &impl Fn(&dyn Evaluable, &[u8], &mut State, &mut P) -> Result<(), Error>,
+    ) -> Result<Stack<Vec<u8>>, Error> {
         // There's a limit on how large scripts can be.
-        if self.0.len() > MAX_SCRIPT_SIZE {
-            return Err(ScriptError::ScriptSize);
+        if self.0.len() > MAX_SIZE {
+            return Err(Error::ScriptSize);
         }
 
         // Main execution loop
@@ -132,41 +84,41 @@ impl<T: Evaluable> ScriptSig<T> {
         })?;
 
         if !state.vexec.is_empty() {
-            return Err(ScriptError::UnbalancedConditional);
+            return Err(Error::UnbalancedConditional);
         }
 
         Ok(state.stack)
     }
 }
 
-impl ScriptSig<PushValue> {
+impl Sig<PushValue> {
     /// Create a new v5-compatible script_sig.
     ///
     /// If you need a pre-v5 script_sig, it can only be instantiated using
-    /// [`Serializable::from_bytes`], as we should no longer have _new_ pre-v5 script_sigs, but are
+    /// [`Parsable::from_bytes`], as we should no longer have _new_ pre-v5 script_sigs, but are
     /// only reading them off earlier parts of the chain.
     pub fn new(script_sig: Vec<PushValue>) -> Self {
-        ScriptSig(script_sig)
+        Sig(script_sig)
     }
 }
 
-impl<T: Serializable> Serializable for ScriptSig<T> {
+impl<T: Parsable> Parsable for Sig<T> {
     fn to_bytes(&self) -> Vec<u8> {
         self.0
             .iter()
             .fold(Vec::new(), |acc, op| [acc, op.to_bytes()].concat())
     }
 
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), ScriptError> {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
         let mut result = Vec::with_capacity(bytes.len());
-        deserialize_vec(&mut result, bytes).map(|()| (ScriptSig(result), &[][..]))
+        deserialize_vec(&mut result, bytes).map(|()| (Sig(result), &[][..]))
     }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-pub struct ScriptPubKey(pub Vec<Opcode>);
+pub struct PubKey(pub Vec<Opcode>);
 
-impl ScriptPubKey {
+impl PubKey {
     /** Encode/decode small integers: */
     fn decode_op_n(opcode: SmallValue) -> u32 {
         if opcode == OP_0 {
@@ -227,11 +179,11 @@ impl ScriptPubKey {
         stack: Stack<Vec<u8>>,
         script_code: &[u8],
         payload: &mut P,
-        eval_step: &impl Fn(&dyn Evaluable, &[u8], &mut State, &mut P) -> Result<(), ScriptError>,
-    ) -> Result<Stack<Vec<u8>>, ScriptError> {
+        eval_step: &impl Fn(&dyn Evaluable, &[u8], &mut State, &mut P) -> Result<(), Error>,
+    ) -> Result<Stack<Vec<u8>>, Error> {
         // There's a limit on how large scripts can be.
-        if self.0.len() > MAX_SCRIPT_SIZE {
-            return Err(ScriptError::ScriptSize);
+        if self.0.len() > MAX_SIZE {
+            return Err(Error::ScriptSize);
         }
 
         // Main execution loop
@@ -245,33 +197,33 @@ impl ScriptPubKey {
         })?;
 
         if !state.vexec.is_empty() {
-            return Err(ScriptError::UnbalancedConditional);
+            return Err(Error::UnbalancedConditional);
         }
 
         Ok(state.stack)
     }
 }
 
-impl Serializable for ScriptPubKey {
+impl Parsable for PubKey {
     fn to_bytes(&self) -> Vec<u8> {
         self.0
             .iter()
             .fold(Vec::new(), |acc, op| [acc, op.to_bytes()].concat())
     }
 
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), ScriptError> {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
         let mut result = Vec::with_capacity(bytes.len());
-        deserialize_vec(&mut result, bytes).map(|()| (ScriptPubKey(result), &[][..]))
+        deserialize_vec(&mut result, bytes).map(|()| (PubKey(result), &[][..]))
     }
 }
 
 /// A Zcash script consists of both the script_sig and the script_pubkey.
 ///
-/// See the documentation on [`ScriptSig`] for explanation of `T`.
+/// See the documentation on [`Sig`] for explanation of `T`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Script<T> {
-    pub sig: ScriptSig<T>,
-    pub pub_key: ScriptPubKey,
+    pub sig: Sig<T>,
+    pub pub_key: PubKey,
 }
 
 impl<T: Evaluable> Script<T> {
@@ -285,9 +237,9 @@ impl<T: Evaluable> Script<T> {
         flags: VerificationFlags,
         script_code: &[u8],
         payload: &mut P,
-        stepper: &impl Fn(&dyn Evaluable, &[u8], &mut State, &mut P) -> Result<(), ScriptError>,
-        p2sh: impl Fn(&Stack<Vec<u8>>, &mut P) -> Result<Stack<Vec<u8>>, ScriptError>,
-    ) -> Result<(), ScriptError> {
+        stepper: &impl Fn(&dyn Evaluable, &[u8], &mut State, &mut P) -> Result<(), Error>,
+        p2sh: impl Fn(&Stack<Vec<u8>>, &mut P) -> Result<Stack<Vec<u8>>, Error>,
+    ) -> Result<(), Error> {
         let data_stack = self.sig.eval(Stack::new(), &[], payload, stepper)?;
         let pub_key_stack =
             self.pub_key
@@ -311,13 +263,13 @@ impl<T: Evaluable> Script<T> {
                 // should be one).
                 assert!(flags.contains(VerificationFlags::P2SH));
                 if result_stack.len() != 1 {
-                    return Err(ScriptError::CleanStack);
+                    return Err(Error::CleanStack);
                 }
             }
 
             Ok(())
         } else {
-            Err(ScriptError::EvalFalse)
+            Err(Error::EvalFalse)
         }
     }
 }
@@ -328,10 +280,10 @@ impl Script<Opcode> {
         flags: VerificationFlags,
         script_code: &[u8],
         payload: &mut P,
-        stepper: &impl Fn(&dyn Evaluable, &[u8], &mut State, &mut P) -> Result<(), ScriptError>,
-    ) -> Result<(), ScriptError> {
+        stepper: &impl Fn(&dyn Evaluable, &[u8], &mut State, &mut P) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         self.eval_(flags, script_code, payload, stepper, |_, _| {
-            Err(ScriptError::SigPushOnly)
+            Err(Error::SigPushOnly)
         })
     }
 }
@@ -342,8 +294,8 @@ impl Script<PushValue> {
         flags: VerificationFlags,
         script_code: &[u8],
         payload: &mut P,
-        stepper: &impl Fn(&dyn Evaluable, &[u8], &mut State, &mut P) -> Result<(), ScriptError>,
-    ) -> Result<(), ScriptError> {
+        stepper: &impl Fn(&dyn Evaluable, &[u8], &mut State, &mut P) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         self.eval_(
             flags,
             script_code,
@@ -356,7 +308,7 @@ impl Script<PushValue> {
                     // `pub_key.eval` above would return false.
                     .split_last()
                     .and_then(|(pub_key_2, remaining_stack)| {
-                        ScriptPubKey::from_bytes(pub_key_2).and_then(|(pk2, _)| {
+                        PubKey::from_bytes(pub_key_2).and_then(|(pk2, _)| {
                             pk2.eval(remaining_stack, pub_key_2, payload, stepper)
                         })
                     })
@@ -364,7 +316,7 @@ impl Script<PushValue> {
                         if p2sh_stack.last().map_or(false, cast_to_bool) {
                             Ok(p2sh_stack)
                         } else {
-                            Err(ScriptError::EvalFalse)
+                            Err(Error::EvalFalse)
                         }
                     })
             },
@@ -373,7 +325,7 @@ impl Script<PushValue> {
 }
 
 /// This populates the provided `Vec`.
-fn deserialize_vec<T: Serializable>(init: &mut Vec<T>, bytes: &[u8]) -> Result<(), ScriptError> {
+fn deserialize_vec<T: Parsable>(init: &mut Vec<T>, bytes: &[u8]) -> Result<(), Error> {
     if bytes.is_empty() {
         Ok(())
     } else {

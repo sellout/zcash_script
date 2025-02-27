@@ -21,7 +21,7 @@ pub enum ScriptNumError {
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 #[repr(i32)]
-pub enum ScriptError {
+pub enum Error {
     // Ok = 0,
     UnknownError = 1,
     EvalFalse,

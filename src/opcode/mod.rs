@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::interpreter::*;
-use crate::script_error::*;
+use crate::{interpreter::*, script};
 pub use operation::*;
 pub use push_value::*;
 
@@ -30,7 +29,7 @@ impl Evaluable for Opcode {
         script: &[u8],
         checker: &dyn SignatureChecker,
         state: &mut State,
-    ) -> Result<(), ScriptError> {
+    ) -> Result<(), script::Error> {
         match self {
             Opcode::PushValue(pv) => {
                 if pv.value().map_or(0, |v| v.len()) <= push_value::MAX_SIZE {
@@ -40,7 +39,7 @@ impl Evaluable for Opcode {
                         Ok(())
                     }
                 } else {
-                    Err(ScriptError::PushSize(None))
+                    Err(script::Error::PushSize(None))
                 }
             }
             Opcode::Operation(op) => op.eval(flags, script, checker, state),
@@ -48,7 +47,7 @@ impl Evaluable for Opcode {
     }
 }
 
-impl Serializable for Opcode {
+impl script::Parsable for Opcode {
     fn to_bytes(&self) -> Vec<u8> {
         match self {
             Opcode::PushValue(v) => v.to_bytes(),
@@ -56,11 +55,11 @@ impl Serializable for Opcode {
         }
     }
 
-    fn from_bytes(script: &[u8]) -> Result<(Self, &[u8]), ScriptError> {
+    fn from_bytes(script: &[u8]) -> Result<(Self, &[u8]), script::Error> {
         PushValue::from_bytes(script)
             .map(|(pv, rem)| (Opcode::PushValue(pv), rem))
             .or_else(|err| match err {
-                ScriptError::SigPushOnly => {
+                script::Error::SigPushOnly => {
                     Operation::from_bytes(script).map(|(op, rem)| (Opcode::Operation(op), rem))
                 }
                 _ => Err(err),
