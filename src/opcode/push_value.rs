@@ -109,8 +109,18 @@ impl From<&LargeValue> for Vec<u8> {
         }
     }
 }
+
 impl LargeValue {
-    pub fn value(&self) -> Vec<u8> {
+    pub fn byte_len(&self) -> usize {
+        1 + match self {
+            PushdataBytelength(data) => data.len(),
+            OP_PUSHDATA1(data) => 1 + data.len(),
+            OP_PUSHDATA2(data) => 2 + data.len(),
+            OP_PUSHDATA4(data) => 4 + data.len(),
+        }
+    }
+
+    pub fn value(&self) -> ValType {
         match self {
             PushdataBytelength(v) | OP_PUSHDATA1(v) | OP_PUSHDATA2(v) | OP_PUSHDATA4(v) => {
                 v.clone()
@@ -120,8 +130,8 @@ impl LargeValue {
 
     pub fn is_minimal_push(&self) -> bool {
         match self {
-            PushdataBytelength(data) => match data.len() {
-                1 => data[0] != 0x81 && (data[0] < 1 || 16 < data[0]),
+            PushdataBytelength(data) => match data[..] {
+                [byte] => byte != 0x81 && (byte < 1 || 16 < byte),
                 _ => true,
             },
             OP_PUSHDATA1(data) => 0x4c <= data.len(),
@@ -161,7 +171,7 @@ pub enum SmallValue {
 use SmallValue::*;
 
 impl SmallValue {
-    pub fn value(&self) -> Option<Vec<u8>> {
+    pub fn value(&self) -> Option<ValType> {
         match self {
             OP_0 => Some(vec![]),
             OP_1NEGATE => Some(vec![0x81]),
@@ -187,7 +197,7 @@ pub enum PushValue {
 }
 
 impl PushValue {
-    pub fn value(&self) -> Option<Vec<u8>> {
+    pub fn value(&self) -> Option<ValType> {
         match self {
             PushValue::LargeValue(pv) => Some(pv.value()),
             PushValue::SmallValue(pv) => pv.value(),
@@ -213,7 +223,7 @@ impl PushValue {
     pub fn eval_(
         &self,
         require_minimal: bool,
-        stack: &mut Stack<Vec<u8>>,
+        stack: &mut Stack<ValType>,
     ) -> Result<(), script::Error> {
         if require_minimal && !self.is_minimal_push() {
             Err(script::Error::MinimalData)
@@ -225,6 +235,13 @@ impl PushValue {
 }
 
 impl Evaluable for PushValue {
+    fn byte_len(&self) -> usize {
+        match self {
+            PushValue::LargeValue(pv) => pv.byte_len(),
+            PushValue::SmallValue(_) => 1,
+        }
+    }
+
     fn eval(
         &self,
         flags: VerificationFlags,

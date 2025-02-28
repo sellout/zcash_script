@@ -137,10 +137,8 @@ impl Operation {
             Err(script::Error::OpCount)
         }
     }
-}
 
-impl Evaluable for Operation {
-    fn eval(
+    pub fn eval(
         &self,
         flags: VerificationFlags,
         script: &[u8],

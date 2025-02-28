@@ -7,8 +7,8 @@
 extern crate enum_primitive;
 
 mod cxx;
-mod external;
-mod interpreter;
+pub mod external;
+pub mod interpreter;
 pub mod op;
 pub mod opcode;
 pub mod pattern;

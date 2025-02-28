@@ -112,6 +112,9 @@ pub const NOP8: Opcode = Operation(Normal(OP_NOP8));
 pub const NOP9: Opcode = Operation(Normal(OP_NOP9));
 pub const NOP10: Opcode = Operation(Normal(OP_NOP10));
 
+/// Operations that fail whenever they would be executed (generally only when they are on an active
+/// branch). However, they’re still useful in various cases (at least testing), so we expose them,
+/// but with an intervening module to make it clear that they’re problematic.
 pub mod bad {
     use crate::{
         opcode::{
@@ -124,13 +127,20 @@ pub mod bad {
     };
 
     pub const RESERVED: Opcode = PushValue(pv::bad::RESERVED);
+    /// **NB**: Because it’s a “control” operation, this fails regardless of whether it’s on an
+    ///         active branch, but it’s historically categorized as “bad” instead of “disabled”.
     pub const VERIF: Opcode = Operation(Control(OP_VERIF));
+    /// **NB**: Because it’s a “control” operation, this fails regardless of whether it’s on an
+    ///         active branch, but it’s historically categorized as “bad” instead of “disabled”.
     pub const VERNOTIF: Opcode = Operation(Control(OP_VERNOTIF));
     pub const VER: Opcode = Operation(Normal(OP_VER));
     pub const RESERVED1: Opcode = Operation(Normal(OP_RESERVED1));
     pub const RESERVED2: Opcode = Operation(Normal(OP_RESERVED2));
 }
 
+/// Operations that fail any time they occur in a script, even on an inactive branch. However,
+/// they’re still useful in various cases (at least testing), so we expose them, but with an
+/// intervening module to make it clear that they’re problematic.
 pub mod disabled {
     use crate::opcode::{
         Control::*,

@@ -25,18 +25,12 @@ impl IdentifiedScriptPubKey {
         match script {
             [op::DUP, op::HASH160, PushValue(LargeValue(PushdataBytelength(hash))), op::EQUALVERIFY, op::CHECKSIG] =>
             {
-                hash[..]
-                    // FIXME: This should use `as_array`, but currently only in nightly.
-                    .first_chunk::<0x14>()
-                    .cloned()
-                    .map(Self::P2PKH)
+                // FIXME: This should use `as_array`, but currently only in nightly.
+                hash.first_chunk::<0x14>().cloned().map(Self::P2PKH)
             }
             [op::HASH160, PushValue(LargeValue(PushdataBytelength(hash))), op::EQUAL] => {
-                hash[..]
-                    // FIXME: This should use `as_array`, but currently only in nightly.
-                    .first_chunk::<0x14>()
-                    .cloned()
-                    .map(Self::P2SH)
+                // FIXME: This should use `as_array`, but currently only in nightly.
+                hash.first_chunk::<0x14>().cloned().map(Self::P2SH)
             }
             _ => None,
         }

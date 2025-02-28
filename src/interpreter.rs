@@ -136,11 +136,12 @@ impl SignatureChecker for BaseSignatureChecker {
     }
 }
 
-pub fn cast_to_bool(vch: &Vec<u8>) -> bool {
-    for i in 0..vch.len() {
-        if vch[i] != 0 {
+pub fn cast_to_bool(vch: &ValType) -> bool {
+    let vch_ = vch.clone().to_vec();
+    for (i, vchi) in vch_.to_vec().iter().enumerate() {
+        if *vchi != 0 {
             // Can be negative zero
-            if i == vch.len() - 1 && vch[i] == 0x80 {
+            if i == vch_.len() - 1 && *vchi == 0x80 {
                 return false;
             }
             return true;
@@ -234,10 +235,12 @@ impl<T: Clone> Stack<T> {
     }
 }
 
+pub type ValType = Vec<u8>;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct State {
-    pub stack: Stack<Vec<u8>>,
-    pub altstack: Stack<Vec<u8>>,
+    pub stack: Stack<ValType>,
+    pub altstack: Stack<ValType>,
     // We keep track of how many operations have executed so far to prevent expensive-to-verify
     // scripts
     pub op_count: u8,
@@ -248,7 +251,7 @@ pub struct State {
 }
 
 impl State {
-    pub fn initial(stack: Stack<Vec<u8>>) -> Self {
+    pub fn initial(stack: Stack<ValType>) -> Self {
         State {
             stack,
             altstack: Stack::new(),
@@ -265,6 +268,8 @@ pub struct Signature {
 }
 
 pub trait Evaluable {
+    fn byte_len(&self) -> usize;
+
     fn eval(
         &self,
         flags: VerificationFlags,

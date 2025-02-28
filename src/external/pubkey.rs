@@ -15,6 +15,11 @@ impl PubKey<'_> {
         !self.0.is_empty()
     }
 
+    /// fully validate whether this is a valid public key (more expensive than [IsValid])
+    pub fn is_fully_valid(&self) -> bool {
+        self.is_valid() && PublicKey::from_slice(self.0).is_ok()
+    }
+
     /// Verify a DER signature (~72 bytes).
     /// If this public key is not fully valid, the return value will be false.
     pub fn verify(&self, hash: &[u8; 32], sig: &ecdsa::Signature) -> bool {

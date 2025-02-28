@@ -41,36 +41,71 @@ pub const LOCKTIME_THRESHOLD: ScriptNum = ScriptNum(500_000_000); // Tue Nov  5 
 pub struct Sig<T>(Vec<T>);
 
 /// Returns a pre-v5 script_sig, and also a v5+ script_sig, if possible.
-pub fn script_sigs_from_bytes(
-    bytes: &[u8],
-) -> Result<AndMaybe<Sig<Opcode>, Sig<PushValue>>, Error> {
-    let mut result = Vec::with_capacity(bytes.len());
-    deserialize_vec(&mut result, bytes)?;
-    Ok(AndMaybe::sequence(
-        &result
-            .iter()
-            .map(|op| match op {
-                Opcode::PushValue(pv) => AndMaybe::Indeed(op.clone(), pv.clone()),
-                Opcode::Operation(_) => AndMaybe::Only(op.clone()),
-            })
-            .collect::<Vec<AndMaybe<Opcode, PushValue>>>(),
-    )
-    .bimap(
-        |ts| Sig(ts.iter().map(|x| (*x).clone()).collect()),
-        |us| Sig(us.iter().map(|x| (*x).clone()).collect()),
-    ))
+///
+/// If you only need one or the other, it’s better to use [`Sig::<T>::from_bytes`], but if you want
+/// to take different paths depending on whether or not this is a v5+ Sig, this is the way to go.
+pub fn sigs_from_bytes(bytes: &[u8]) -> Result<AndMaybe<Sig<Opcode>, Sig<PushValue>>, Error> {
+    vec::from_bytes(bytes).map(|(result, _)| {
+        AndMaybe::sequence(
+            &result
+                .iter()
+                .map(|op| match op {
+                    Opcode::PushValue(pv) => AndMaybe::Indeed(op.clone(), pv.clone()),
+                    Opcode::Operation(_) => AndMaybe::Only(op.clone()),
+                })
+                .collect::<Vec<AndMaybe<Opcode, PushValue>>>(),
+        )
+        .bimap(
+            |ts| Sig(ts.iter().cloned().cloned().collect()),
+            |us| Sig(us.iter().cloned().cloned().collect()),
+        )
+    })
 }
 
-impl<T: Evaluable> Sig<T> {
-    pub fn eval<P>(
-        &self,
-        stack: Stack<Vec<u8>>,
+/// A few `pub` types with similar (if not identical) implementations are backed by [`Vec`]s, so we
+/// put the common implementations in this module. This is better than, say, `impl<T: Evaluable>
+/// Evaluable for Vec<T>`, because it keeps these functions private.
+mod vec {
+    use super::{error::Error, parser::Parsable, MAX_SIZE};
+    use crate::interpreter::*;
+
+    /// This populates the provided `Vec`.
+    fn deserialize<T: Parsable>(init: &mut Vec<T>, bytes: &[u8]) -> Result<(), Error> {
+        if bytes.is_empty() {
+            Ok(())
+        } else {
+            T::from_bytes(bytes).and_then(|(op, rest)| {
+                init.push(op);
+                deserialize(init, rest)
+            })
+        }
+    }
+
+    pub fn from_bytes<T: Parsable>(bytes: &[u8]) -> Result<(Vec<T>, &[u8]), Error> {
+        if bytes.len() > MAX_SIZE {
+            Err(Error::ScriptSize)
+        } else {
+            let mut result = Vec::with_capacity(bytes.len());
+            deserialize(&mut result, bytes).map(|()| {
+                result.shrink_to_fit();
+                (result, &[][..])
+            })
+        }
+    }
+
+    pub fn byte_len<T: Evaluable>(vec: &Vec<T>) -> usize {
+        vec.iter().map(T::byte_len).sum()
+    }
+
+    pub fn eval<T: Evaluable, P>(
+        vec: &Vec<T>,
+        stack: Stack<ValType>,
         script_code: &[u8],
         payload: &mut P,
         eval_step: &impl Fn(&dyn Evaluable, &[u8], &mut State, &mut P) -> Result<(), Error>,
-    ) -> Result<Stack<Vec<u8>>, Error> {
+    ) -> Result<Stack<ValType>, Error> {
         // There's a limit on how large scripts can be.
-        if self.0.len() > MAX_SIZE {
+        if byte_len(vec) > MAX_SIZE {
             return Err(Error::ScriptSize);
         }
 
@@ -80,7 +115,7 @@ impl<T: Evaluable> Sig<T> {
         //
         // lex(script).fold(eval_step, State::initial(stack))
         let mut state = State::initial(stack);
-        self.0.iter().fold(Ok(&mut state), |state, opcode| {
+        vec.iter().fold(Ok(&mut state), |state, opcode| {
             state.and_then(|state| eval_step(opcode, script_code, state, payload).map(|()| state))
         })?;
 
@@ -92,9 +127,25 @@ impl<T: Evaluable> Sig<T> {
     }
 }
 
+impl<T: Evaluable> Sig<T> {
+    pub fn byte_len(&self) -> usize {
+        vec::byte_len(&self.0)
+    }
+
+    pub fn eval<P>(
+        &self,
+        stack: Stack<ValType>,
+        script_code: &[u8],
+        payload: &mut P,
+        eval_step: &impl Fn(&dyn Evaluable, &[u8], &mut State, &mut P) -> Result<(), Error>,
+    ) -> Result<Stack<ValType>, Error> {
+        vec::eval(&self.0, stack, script_code, payload, eval_step)
+    }
+}
+
 impl Sig<Opcode> {
     pub fn well_formed(&self, flags: VerificationFlags) -> Result<(), Error> {
-        if self.0.len() > MAX_SIZE {
+        if self.byte_len() > MAX_SIZE {
             return Err(Error::ScriptSize);
         }
 
@@ -123,7 +174,7 @@ impl Sig<PushValue> {
 
     pub fn well_formed(&self, flags: VerificationFlags) -> Result<(), Error> {
         // There's a limit on how large scripts can be.
-        if self.0.len() > MAX_SIZE {
+        if self.byte_len() > MAX_SIZE {
             return Err(Error::ScriptSize);
         }
 
@@ -141,8 +192,7 @@ impl<T: Parsable> Parsable for Sig<T> {
     }
 
     fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
-        let mut result = Vec::with_capacity(bytes.len());
-        deserialize_vec(&mut result, bytes).map(|()| (Sig(result), &[][..]))
+        vec::from_bytes(bytes).map(|(r, t)| (Sig(r), t))
     }
 }
 
@@ -150,6 +200,10 @@ impl<T: Parsable> Parsable for Sig<T> {
 pub struct PubKey(pub Vec<Opcode>);
 
 impl PubKey {
+    pub fn byte_len(&self) -> usize {
+        vec::byte_len(&self.0)
+    }
+
     /** Encode/decode small integers: */
     fn decode_op_n(opcode: SmallValue) -> u32 {
         if opcode == OP_0 {
@@ -224,7 +278,7 @@ impl PubKey {
     ///           elements, but what each element is an argument to (e.g., hashes, numbers, or a
     ///           redeem script); it could do partial evaluation; etc.
     pub fn well_formed(&self, flags: VerificationFlags) -> Result<(), Error> {
-        if self.0.len() > MAX_SIZE {
+        if self.byte_len() > MAX_SIZE {
             return Err(Error::ScriptSize);
         }
 
@@ -242,31 +296,12 @@ impl PubKey {
 
     pub fn eval<P>(
         &self,
-        stack: Stack<Vec<u8>>,
+        stack: Stack<ValType>,
         script_code: &[u8],
         payload: &mut P,
         eval_step: &impl Fn(&dyn Evaluable, &[u8], &mut State, &mut P) -> Result<(), Error>,
-    ) -> Result<Stack<Vec<u8>>, Error> {
-        // There's a limit on how large scripts can be.
-        if self.0.len() > MAX_SIZE {
-            return Err(Error::ScriptSize);
-        }
-
-        // Main execution loop
-        //
-        // TODO: With a streaming lexer, this could be
-        //
-        // lex(script).fold(eval_step, State::initial(stack))
-        let mut state = State::initial(stack);
-        self.0.iter().fold(Ok(&mut state), |state, opcode| {
-            state.and_then(|state| eval_step(opcode, script_code, state, payload).map(|()| state))
-        })?;
-
-        if !state.vexec.is_empty() {
-            return Err(Error::UnbalancedConditional);
-        }
-
-        Ok(state.stack)
+    ) -> Result<Stack<ValType>, Error> {
+        vec::eval(&self.0, stack, script_code, payload, eval_step)
     }
 }
 
@@ -278,8 +313,7 @@ impl Parsable for PubKey {
     }
 
     fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
-        let mut result = Vec::with_capacity(bytes.len());
-        deserialize_vec(&mut result, bytes).map(|()| (PubKey(result), &[][..]))
+        vec::from_bytes(bytes).map(|(r, t)| (PubKey(r), t))
     }
 }
 
@@ -293,6 +327,10 @@ pub struct Script<T> {
 }
 
 impl<T: Evaluable> Script<T> {
+    pub fn byte_len(&self) -> usize {
+        self.sig.byte_len() + self.pub_key.byte_len()
+    }
+
     /// The primary script evaluator.
     ///
     /// **NB**: This takes an extra `p2sh` function argument. The behavior of P2SH scripts depends
@@ -304,7 +342,7 @@ impl<T: Evaluable> Script<T> {
         script_code: &[u8],
         payload: &mut P,
         stepper: &impl Fn(&dyn Evaluable, &[u8], &mut State, &mut P) -> Result<(), Error>,
-        p2sh: impl Fn(&Stack<Vec<u8>>, &mut P) -> Result<Stack<Vec<u8>>, Error>,
+        p2sh: impl Fn(&Stack<ValType>, &mut P) -> Result<Stack<ValType>, Error>,
     ) -> Result<(), Error> {
         let data_stack = self.sig.eval(Stack::new(), &[], payload, stepper)?;
         let pub_key_stack =
@@ -411,17 +449,5 @@ impl Script<PushValue> {
                     })
             },
         )
-    }
-}
-
-/// This populates the provided `Vec`.
-fn deserialize_vec<T: Parsable>(init: &mut Vec<T>, bytes: &[u8]) -> Result<(), Error> {
-    if bytes.is_empty() {
-        Ok(())
-    } else {
-        T::from_bytes(bytes).and_then(|(op, rest)| {
-            init.push(op);
-            deserialize_vec(init, rest)
-        })
     }
 }

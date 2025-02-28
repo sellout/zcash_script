@@ -5,7 +5,7 @@ pub use operation::*;
 pub use push_value::*;
 
 mod operation;
-mod push_value;
+pub mod push_value;
 
 /** Script opcodes */
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Deserialize, Serialize)]
@@ -39,6 +39,13 @@ impl Opcode {
 }
 
 impl Evaluable for Opcode {
+    fn byte_len(&self) -> usize {
+        match self {
+            Opcode::PushValue(pv) => pv.byte_len(),
+            Opcode::Operation(_) => 1,
+        }
+    }
+
     /// Run a single step of the interpreter.
     ///
     /// This is useful for testing & debugging, as we can set up the exact state we want in order to

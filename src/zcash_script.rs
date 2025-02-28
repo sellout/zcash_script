@@ -147,7 +147,7 @@ impl RustInterpreter {
     ) -> Result<(), Error> {
         script::PubKey::from_bytes(script_pub_key)
             .and_then(|(pub_key, _)| {
-                script::script_sigs_from_bytes(script_sig).and_then(|am| match am {
+                script::sigs_from_bytes(script_sig).and_then(|am| match am {
                     AndMaybe::Only(sig) => {
                         if flags.contains(VerificationFlags::SigPushOnly) {
                             Err(script::Error::SigPushOnly)
