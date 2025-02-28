@@ -118,6 +118,27 @@ pub enum Operation {
     Unknown(u8),
 }
 
+impl Operation {
+    pub fn well_formed(
+        &self,
+        flags: VerificationFlags,
+        op_count: &mut u8,
+        vexec: &mut Stack<bool>,
+    ) -> Result<(), script::Error> {
+        // Note how OP_RESERVED does not count towards the opcode limit.
+        *op_count += 1;
+        if *op_count <= 201 {
+            match self {
+                Operation::Control(control) => control.well_formed(vexec),
+                Operation::Normal(normal) => normal.well_formed(flags),
+                Operation::Unknown(byte) => Err(script::Error::BadOpcode(Some(*byte))),
+            }
+        } else {
+            Err(script::Error::OpCount)
+        }
+    }
+}
+
 impl Evaluable for Operation {
     fn eval(
         &self,
@@ -236,6 +257,32 @@ pub enum Control {
 use Control::*;
 
 impl Control {
+    /// Processes the script generically – i.e., any errors that occur would occur regardless of the
+    /// initial stack it’s provided.
+    pub fn well_formed(&self, vexec: &mut Stack<bool>) -> Result<(), script::Error> {
+        match self {
+            OP_IF | OP_NOTIF => Ok(vexec.push(true)),
+
+            OP_ELSE => vexec
+                .rget(0)
+                .map_err(|_| script::Error::UnbalancedConditional)
+                .map(|_| ()),
+
+            OP_ENDIF => vexec
+                .pop()
+                .map_err(|_| script::Error::UnbalancedConditional)
+                .map(|_| ()),
+
+            OP_VERIF | OP_VERNOTIF => Err(script::Error::BadOpcode(Some((*self).into()))),
+
+            // Disabled operations fail whenever they appear in a script, regardless of whether
+            // they are on an active branch.
+            OP_CAT | OP_SUBSTR | OP_LEFT | OP_RIGHT | OP_INVERT | OP_AND | OP_OR | OP_XOR
+            | OP_2MUL | OP_2DIV | OP_MUL | OP_DIV | OP_MOD | OP_LSHIFT | OP_RSHIFT
+            | OP_CODESEPARATOR => Err(script::Error::DisabledOpcode((*self).into())),
+        }
+    }
+
     /// <expression> if [statements] [else [statements]] endif
     pub fn eval(
         &self,
@@ -379,6 +426,33 @@ pub enum Normal {
 use Normal::*;
 
 impl Normal {
+    pub fn well_formed(&self, flags: VerificationFlags) -> Result<(), script::Error> {
+        match self {
+            OP_CHECKLOCKTIMEVERIFY => {
+                if !flags.contains(VerificationFlags::CHECKLOCKTIMEVERIFY)
+                    && flags.contains(VerificationFlags::DiscourageUpgradableNOPs)
+                {
+                    Err(script::Error::DiscourageUpgradableNOPs)
+                } else {
+                    Ok(())
+                }
+            }
+            OP_NOP1 | OP_NOP3 | OP_NOP4 | OP_NOP5 | OP_NOP6 | OP_NOP7 | OP_NOP8 | OP_NOP9
+            | OP_NOP10 => {
+                if flags.contains(VerificationFlags::DiscourageUpgradableNOPs) {
+                    Err(script::Error::DiscourageUpgradableNOPs)
+                } else {
+                    Ok(())
+                }
+            }
+            OP_RETURN => Err(script::Error::OpReturn),
+            OP_VER | OP_RESERVED1 | OP_RESERVED2 => {
+                Err(script::Error::BadOpcode(Some((*self).into())))
+            }
+            _ => Ok(()),
+        }
+    }
+
     pub fn eval(
         &self,
         flags: VerificationFlags,
@@ -430,7 +504,7 @@ impl Normal {
             //
             OP_NOP => Ok(()),
 
-            &OP_CHECKLOCKTIMEVERIFY => {
+            OP_CHECKLOCKTIMEVERIFY => {
                 // This was originally OP_NOP2 but has been repurposed
                 // for OP_CHECKLOCKTIMEVERIFY. So, we should act based
                 // on whether or not CLTV has been activated in a soft

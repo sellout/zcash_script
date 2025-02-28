@@ -92,6 +92,25 @@ impl<T: Evaluable> Sig<T> {
     }
 }
 
+impl Sig<Opcode> {
+    pub fn well_formed(&self, flags: VerificationFlags) -> Result<(), Error> {
+        if self.0.len() > MAX_SIZE {
+            return Err(Error::ScriptSize);
+        }
+
+        let mut state = State::initial(Stack::new());
+        self.0.iter().fold(Ok(()), |prev, opcode| {
+            prev.and_then(|()| opcode.well_formed(flags, &mut state.op_count, &mut state.vexec))
+        })?;
+
+        if !state.vexec.is_empty() {
+            return Err(Error::UnbalancedConditional);
+        }
+
+        Ok(())
+    }
+}
+
 impl Sig<PushValue> {
     /// Create a new v5-compatible script_sig.
     ///
@@ -100,6 +119,17 @@ impl Sig<PushValue> {
     /// only reading them off earlier parts of the chain.
     pub fn new(script_sig: Vec<PushValue>) -> Self {
         Sig(script_sig)
+    }
+
+    pub fn well_formed(&self, flags: VerificationFlags) -> Result<(), Error> {
+        // There's a limit on how large scripts can be.
+        if self.0.len() > MAX_SIZE {
+            return Err(Error::ScriptSize);
+        }
+
+        self.0.iter().fold(Ok(()), |prev, pv| {
+            prev.and_then(|()| pv.well_formed(flags.contains(VerificationFlags::MinimalData)))
+        })
     }
 }
 
@@ -173,6 +203,41 @@ impl PubKey {
             }
             _ => false,
         }
+    }
+
+    /// Do some basic static analysis to ensure the script makes sense. E.g., it ensures
+    /// - that the script isn’t too long
+    /// - that conditionals are balanced
+    /// - that pushes are minimal (if the flags require it)
+    /// - that no push is too large
+    /// - that there are no bad or disabled opcodes in the script
+    /// - etc.
+    ///
+    /// **TODO**: This checks all branches, because it can’t know whether any particular branch will
+    ///           be executed on a given run. Unfortunately, this means it can return a failure even
+    ///           if an invalid branch is unreachable. It would be better to distinguish failures
+    ///           that might not happen from those that will.
+    ///
+    /// **TODO**: Ideally, this could have the same skeleton as `eval`, with just different
+    ///           behaviors passed in. The behavior here would basically be a NOP, but it _could_ be
+    ///           richer. E.g., it could track what is needed in the stack – not just how many
+    ///           elements, but what each element is an argument to (e.g., hashes, numbers, or a
+    ///           redeem script); it could do partial evaluation; etc.
+    pub fn well_formed(&self, flags: VerificationFlags) -> Result<(), Error> {
+        if self.0.len() > MAX_SIZE {
+            return Err(Error::ScriptSize);
+        }
+
+        let mut state = State::initial(Stack::new());
+        self.0.iter().fold(Ok(()), |prev, opcode| {
+            prev.and_then(|()| opcode.well_formed(flags, &mut state.op_count, &mut state.vexec))
+        })?;
+
+        if !state.vexec.is_empty() {
+            return Err(Error::UnbalancedConditional);
+        }
+
+        Ok(())
     }
 
     pub fn eval<P>(
@@ -276,6 +341,20 @@ impl<T: Evaluable> Script<T> {
 }
 
 impl Script<Opcode> {
+    pub fn well_formed_(&self, flags: VerificationFlags) -> Result<(), Error> {
+        self.sig.well_formed(flags)?;
+        self.pub_key.well_formed(flags)?;
+        if flags.contains(VerificationFlags::P2SH) && self.pub_key.is_pay_to_script_hash() {
+            Err(Error::SigPushOnly)?
+        }
+
+        if flags.contains(VerificationFlags::CleanStack) {
+            assert!(flags.contains(VerificationFlags::P2SH));
+        }
+
+        Ok(())
+    }
+
     pub fn eval<P>(
         &self,
         flags: VerificationFlags,
@@ -290,6 +369,16 @@ impl Script<Opcode> {
 }
 
 impl Script<PushValue> {
+    pub fn well_formed(&self, flags: VerificationFlags) -> Result<(), Error> {
+        self.sig.well_formed(flags)?;
+        self.pub_key.well_formed(flags)?;
+        if flags.contains(VerificationFlags::CleanStack) {
+            assert!(flags.contains(VerificationFlags::P2SH));
+        }
+
+        Ok(())
+    }
+
     pub fn eval<P>(
         &self,
         flags: VerificationFlags,

@@ -201,6 +201,15 @@ impl PushValue {
         }
     }
 
+    pub fn well_formed(&self, require_minimal: bool) -> Result<(), script::Error> {
+        if require_minimal && !self.is_minimal_push() {
+            Err(script::Error::MinimalData)
+        } else {
+            self.value()
+                .map_or(Err(script::Error::BadOpcode(None)), |_| Ok(()))
+        }
+    }
+
     pub fn eval_(
         &self,
         require_minimal: bool,

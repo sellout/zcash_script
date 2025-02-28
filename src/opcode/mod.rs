@@ -18,6 +18,26 @@ pub enum Opcode {
     Operation(Operation),
 }
 
+impl Opcode {
+    pub fn well_formed(
+        &self,
+        flags: VerificationFlags,
+        op_count: &mut u8,
+        vexec: &mut Stack<bool>,
+    ) -> Result<(), script::Error> {
+        match self {
+            Opcode::PushValue(pv) => {
+                if pv.value().map_or(0, |v| v.len()) <= push_value::MAX_SIZE {
+                    pv.well_formed(flags.contains(VerificationFlags::MinimalData))
+                } else {
+                    Err(script::Error::PushSize(None))
+                }
+            }
+            Opcode::Operation(op) => op.well_formed(flags, op_count, vexec),
+        }
+    }
+}
+
 impl Evaluable for Opcode {
     /// Run a single step of the interpreter.
     ///
