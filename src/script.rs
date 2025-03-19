@@ -12,10 +12,8 @@ use crate::{
     script_error::ScriptError,
 };
 
-pub const MAX_SCRIPT_ELEMENT_SIZE: usize = 520; // bytes
-
 /// Maximum script length in bytes
-pub const MAX_SCRIPT_SIZE: usize = 10_000;
+pub const MAX_SIZE: usize = 10_000;
 
 /** Serialized script, used inside transaction inputs and outputs */
 #[derive(Clone, Debug)]
