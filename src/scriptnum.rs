@@ -3,7 +3,11 @@ use std::{
     ops::{Add, Neg, Sub},
 };
 
-use super::script_error::*;
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Error {
+    NonMinimalEncoding,
+    Overflow { max_num_size: usize, actual: usize },
+}
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct ScriptNum(pub i64);
@@ -18,10 +22,10 @@ impl ScriptNum {
         vch: &Vec<u8>,
         require_minimal: bool,
         max_num_size: Option<usize>,
-    ) -> Result<Self, ScriptNumError> {
+    ) -> Result<Self, Error> {
         let max_num_size = max_num_size.unwrap_or(Self::DEFAULT_MAX_NUM_SIZE);
         if vch.len() > max_num_size {
-            return Err(ScriptNumError::Overflow {
+            return Err(Error::Overflow {
                 max_num_size,
                 actual: vch.len(),
             });
@@ -41,7 +45,7 @@ impl ScriptNum {
                 // An example of this is +-255, which have minimal encodings
                 // [0xff, 0x00] and [0xff, 0x80] respectively.
                 if vch.len() <= 1 || (vch[vch.len() - 2] & 0x80) == 0 {
-                    return Err(ScriptNumError::NonMinimalEncoding);
+                    return Err(Error::NonMinimalEncoding);
                 }
             }
         }
@@ -102,7 +106,7 @@ impl ScriptNum {
         result
     }
 
-    fn set_vch(vch: &Vec<u8>) -> Result<i64, ScriptNumError> {
+    fn set_vch(vch: &Vec<u8>) -> Result<i64, Error> {
         match vch.last() {
             None => Ok(0),
             Some(vch_back) => {
@@ -117,7 +121,7 @@ impl ScriptNum {
                 // result). The above encoding of `i64::MIN` is the only allowed
                 // 9-byte encoding.
                 if vch.len() > 8 {
-                    return Err(ScriptNumError::Overflow {
+                    return Err(Error::Overflow {
                         max_num_size: 8,
                         actual: vch.len(),
                     });

@@ -1,8 +1,12 @@
 use std::num::TryFromIntError;
 
-use super::interpreter::*;
-use super::script::*;
-use super::script_error::*;
+use crate::{
+    interpreter::{
+        verify_script, DefaultStepEvaluator, ScriptError, SignatureChecker, State, StepFn,
+        VerificationFlags,
+    },
+    script::*,
+};
 
 /// This maps to `zcash_script_error_t`, but most of those cases aren’t used any more. This only
 /// replicates the still-used cases, and then an `Unknown` bucket for anything else that might
@@ -11,8 +15,6 @@ use super::script_error::*;
 pub enum Error {
     /// Any failure that results in the script being invalid.
     Ok(ScriptError),
-    /// An exception was caught.
-    VerifyScript,
     /// The script size can’t fit in a `u32`, as required by the C++ code.
     InvalidScriptSize(TryFromIntError),
     /// Some other failure value recovered from C++.
@@ -213,7 +215,7 @@ impl<F: StepFn> ZcashScript for StepwiseInterpreter<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::*;
+    use crate::{interpreter::CallbackTransactionSignatureChecker, testing::*};
     use proptest::prelude::*;
 
     #[test]
@@ -268,10 +270,10 @@ mod tests {
         // The final return value is from whichever stepper failed.
         assert_eq!(
             ret,
-            Err(Error::Ok(ScriptError::ReadError {
+            Err(Error::Ok(ScriptError::Read(ReadError {
                 expected_bytes: 1,
                 available_bytes: 0,
-            }))
+            })))
         );
 
         // `State`s are large, so we just check that there was some progress in lock step, and a
@@ -282,10 +284,10 @@ mod tests {
                 diverging_result:
                     Some((
                         Ok(state),
-                        Err(ScriptError::ReadError {
+                        Err(ScriptError::Read(ReadError {
                             expected_bytes: 1,
                             available_bytes: 0,
-                        }),
+                        })),
                     )),
                 payload_l: (),
                 payload_r: (),
