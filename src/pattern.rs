@@ -27,6 +27,8 @@
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
 
+use alloc::vec::Vec;
+
 use crate::{
     op,
     opcode::{

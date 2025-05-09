@@ -2,6 +2,8 @@
 
 #![allow(missing_docs)]
 
+use alloc::vec::Vec;
+
 use crate::{
     opcode::{
         operation::{Control::*, Operation::*},

@@ -1,6 +1,7 @@
 //! Execution of opcodes
 
-use std::{
+use alloc::vec::Vec;
+use core::{
     cmp::{max, min},
     num::TryFromIntError,
     slice::Iter,
