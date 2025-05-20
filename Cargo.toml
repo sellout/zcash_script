@@ -1,15 +1,14 @@
 # Note [explicit >= version requirements]
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Some dependencies are shared with a lot of other Zebra dependencies, so they have an explicit `>=`
-# in the version requirement (e.g., `version = ">= 0.1.2"`), which treats minor versions with a zero
-# major version as compatible (Cargo doesn't by default
-# (https://doc.rust-lang.org/cargo/reference/semver.html#change-categories)). This allows them to
-# match the specific version required by Zebra while using the latest version in CI to catch any
+# in the version requirement (e.g., `version = ">= 0.1.2"`), which bypasses Cargo’s usual SemVer
+# bounds (https://doc.rust-lang.org/cargo/reference/semver.html#change-categories). This allows them
+# to match the specific version required by Zebra while using the latest version in CI to catch any
 # breaking changes in newer releases.
 
 [package]
 name = "zcash_script"
-version = "0.3.0"
+version = "0.3.1"
 authors = [
     "Electric Coin Company <info@electriccoin.co>",
     "Greg Pfeil <greg@technomadic.org>",
@@ -86,12 +85,14 @@ serde = { version = "1.0", features = ["derive"] }
 serde_repr = "0.1"
 sha-1 = "0.10"
 sha2 = "0.10"
-tracing = "0.1.41"
+tracing = "0.1"
 
 [build-dependencies]
-bindgen = ">= 0.64.0" # See Note [explicit >= version requirements]
-
-cc = { version = "1.2.11", features = ["parallel"] }
+# See Note [explicit >= version requirements]
+# In the case of `bindgen`, it’s to match Zebra’s indirect dependency on `rockdb`.
+bindgen = ">= 0.69.5"
+# See Note [explicit >= version requirements]
+cc = { version = ">= 1.2.11", features = ["parallel"] }
 
 [dev-dependencies]
 hex = ">= 0.4.3" # See Note [explicit >= version requirements]
