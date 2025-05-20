@@ -110,33 +110,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-          path: crate
-      # We use a synthetic crate to ensure no dev-dependencies are enabled, which can
-      # be incompatible with some of these targets.
-      - name: Copy Rust toolchain into the root for use in synthetic crate setup
-        run: cp crate/rust-toolchain.toml .
-      - name: Create synthetic crate for testing
-        run: cargo init --lib ci-build
-      - name: Move Rust toolchain file into synthetic crate
-        run: mv rust-toolchain.toml ci-build/
-      - name: Copy patch directives into synthetic crate
-        run: |
-          echo "[patch.crates-io]" >> ./ci-build/Cargo.toml
-          cat ./crate/Cargo.toml | sed "0,/.\+\(patch.crates.\+\)/d" >> ./ci-build/Cargo.toml
-      - name: Add no_std pragma to lib.rs
-        run: |
-          echo "#![no_std]" > ./ci-build/src/lib.rs
-      - name: Add zcash_script as a dependency of the synthetic crate
-        working-directory: ./ci-build
-        run: cargo add --no-default-features --path ../crate
-      - name: Add lazy_static with the spin_no_std feature
-        working-directory: ./ci-build
-        run: cargo add lazy_static --features "spin_no_std"
-      - name: Add target
-        working-directory: ./ci-build
-        run: rustup target add ${{ matrix.target }}
       - name: Build for target
-        working-directory: ./ci-build
+        working-directory: ./verify-no_std
         run: cargo build --verbose --target ${{ matrix.target }}
 
   fmt:
