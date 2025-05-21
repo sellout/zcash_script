@@ -1,6 +1,7 @@
 //! Managing sequences of opcodes.
 
-use std::num::TryFromIntError;
+use alloc::vec::Vec;
+use core::num::TryFromIntError;
 
 use serde::{Deserialize, Serialize};
 

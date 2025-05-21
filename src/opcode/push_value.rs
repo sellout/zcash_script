@@ -1,5 +1,7 @@
 #![allow(non_camel_case_types)]
 
+use alloc::vec::Vec;
+
 use serde::{de, Deserialize, Serialize, Serializer};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 

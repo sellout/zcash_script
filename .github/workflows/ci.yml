@@ -99,6 +99,21 @@ jobs:
         with:
           command: test
 
+  build-nostd:
+    name: Build target ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - thumbv7em-none-eabihf
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build for target
+        working-directory: ./verify-no_std
+        run: cargo build --verbose --target ${{ matrix.target }}
+
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest

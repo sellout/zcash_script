@@ -2,6 +2,8 @@
 
 #![allow(missing_docs)]
 
+use alloc::vec::Vec;
+
 use crate::opcode::{
     push_value::{LargeValue::*, SmallValue::*},
     PushValue::{self, LargeValue, SmallValue},

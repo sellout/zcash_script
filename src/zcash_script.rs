@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::{
     interpreter::{
         self, verify_script, DefaultStepEvaluator, SignatureChecker, State, StepFn,
