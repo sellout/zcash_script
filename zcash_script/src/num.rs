@@ -83,44 +83,37 @@ pub fn parse(vch: &[u8], require_minimal: bool, max_size: Option<usize>) -> Resu
 
 /// Convert an i64 to the corresponding byte sequence.
 pub fn serialize(value: i64) -> Vec<u8> {
-    if value == 0 {
-        return Vec::new();
-    }
-
     if value == i64::MIN {
         // The code below was based on buggy C++ code, that produced the "wrong" result for
         // INT64_MIN. In that case we intentionally return the result that the C++ code as compiled
         // for zcashd (with `-fwrapv`) originally produced on an x86_64 system.
-        return vec![0, 0, 0, 0, 0, 0, 0, 128, 128];
-    }
+        vec![0, 0, 0, 0, 0, 0, 0, 128, 128]
+    } else {
+        let neg = value < 0;
+        let mut result: Vec<u8> = value
+            .unsigned_abs()
+            .to_be_bytes()
+            .into_iter()
+            .skip_while(|x| *x == 0)
+            .collect();
+        result.reverse();
 
-    let mut result = Vec::new();
-    let neg = value < 0;
-    let mut absvalue = value.abs();
-
-    while absvalue != 0 {
-        result.push(
-            (absvalue & 0xff)
-                .try_into()
-                .unwrap_or_else(|_| unreachable!()),
-        );
-        absvalue >>= 8;
-    }
-
-    // - If the most significant byte is >= 0x80 and the value is positive, push a new zero-byte to
-    //   make the significant byte < 0x80 again.
-    // - If the most significant byte is >= 0x80 and the value is negative, push a new 0x80 byte
-    //   that will be popped off when converting to an integral.
-    // - If the most significant byte is < 0x80 and the value is negative, add 0x80 to it, since it
-    //   will be subtracted and interpreted as a negative when converting to an integral.
-
-    if result.last().map_or(true, |last| last & 0x80 != 0) {
-        result.push(if neg { 0x80 } else { 0 });
-    } else if neg {
-        if let Some(last) = result.last_mut() {
-            *last |= 0x80;
+        // - If the most significant byte is >= 0x80 and the value is positive, push a new zero-byte
+        //   to make the significant byte < 0x80 again.
+        // - If the most significant byte is >= 0x80 and the value is negative, push a new 0x80 byte
+        //   that will be popped off when converting to an integral.
+        // - If the most significant byte is < 0x80 and the value is negative, add 0x80 to it, since
+        //   it will be subtracted and interpreted as a negative when converting to an integral.
+        match result.last_mut() {
+            None => (),
+            Some(last) => {
+                if 0x80 <= *last {
+                    result.push(if neg { 0x80 } else { 0 });
+                } else if neg {
+                    *last |= 0x80;
+                }
+            }
         }
+        result
     }
-
-    result
 }
