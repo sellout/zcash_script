@@ -47,10 +47,13 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    num, op, opcode, pv,
+    op, opcode, pv,
     script::{self, Evaluable},
     Opcode::{self, PushValue},
 };
+
+#[deprecated(since = "0.4.1", note = "use version from zcash_script::pv")]
+pub use crate::pv::{push_160b_hash, push_256b_hash, push_num, push_script};
 
 /// Pushes a value onto the stack that indicates whether the stack was previously empty.
 ///
@@ -125,12 +128,12 @@ pub fn push_pubkey(pubkey: &[u8]) -> Result<Opcode, Error> {
 ///   type: `sig_count*Signature -> [Bool]`
 pub fn check_multisig(sig_count: u8, pks: &[&[u8]], verify: bool) -> Result<Vec<Opcode>, Error> {
     Ok([
-        &[PushValue(push_num(sig_count.into()))],
+        &[PushValue(pv::push_num(sig_count.into()))],
         &pks.iter()
             .map(|pk| push_pubkey(pk))
             .collect::<Result<Vec<_>, _>>()?[..],
         &[
-            PushValue(push_num(
+            PushValue(pv::push_num(
                 pks.len()
                     .try_into()
                     .map_err(|_| Error::TooManyPubKeys(pks.len()))?,
@@ -179,7 +182,11 @@ pub fn check_sig(pubkey: &[u8], verify: bool) -> Result<[Opcode; 2], Error> {
 ///
 /// type: `[a] -> [a] + 💥?`
 pub fn size_check(expected: u32) -> Vec<Opcode> {
-    [&[op::SIZE], &equals(push_num(expected.into()), true)[..]].concat()
+    [
+        &[op::SIZE],
+        &equals(pv::push_num(expected.into()), true)[..],
+    ]
+    .concat()
 }
 
 /// “CLTV”
@@ -187,39 +194,10 @@ pub fn size_check(expected: u32) -> Vec<Opcode> {
 /// type: `[] -> ([lt] + 💥)?`
 pub fn check_lock_time_verify(lt: u32) -> [Opcode; 3] {
     [
-        PushValue(push_num(lt.into())),
+        PushValue(pv::push_num(lt.into())),
         op::CHECKLOCKTIMEVERIFY,
         op::DROP,
     ]
-}
-
-/// Produce a minimal `PushValue` that encodes the provided number.
-pub fn push_num(n: i64) -> opcode::PushValue {
-    pv::push_value(&num::serialize(n)).expect("all i64 can be encoded as `PushValue`")
-}
-
-/// Produce a minimal `PushValue` that encodes the provided script. This is particularly useful with
-/// P2SH.
-pub fn push_script<T: Into<opcode::PossiblyBad> + opcode::Evaluable + Clone>(
-    script: &script::Component<T>,
-) -> Option<opcode::PushValue> {
-    pv::push_value(&script.to_bytes())
-}
-
-/// Creates a `PushValue` from a 20-byte value (basically, RipeMD160 and other hashes).
-///
-/// __TODO__: Once const_generic_exprs lands, this should become `push_array<N>(a: &[u8; N])` with
-///           `N` bounded by [`opcode::push_value::LargeValue::MAX_SIZE`].
-pub fn push_160b_hash(hash: &[u8; 20]) -> opcode::PushValue {
-    pv::push_value(hash).expect("20 is a valid data size")
-}
-
-/// Creates a `PushValue` from a 32-byte value (basically, SHA-256 and other hashes).
-///
-/// __TODO__: Once const_generic_exprs lands, this should become `push_array<N>(a: &[u8; N])` with
-///           `N` bounded by [`opcode::push_value::LargeValue::MAX_SIZE`].
-pub fn push_256b_hash(hash: &[u8; 32]) -> opcode::PushValue {
-    pv::push_value(hash).expect("32 is a valid data size")
 }
 
 /// P2PK
@@ -238,7 +216,7 @@ pub fn pay_to_pubkey_hash(pk: &[u8]) -> Vec<Opcode> {
     [
         &[op::DUP, op::HASH160],
         &equals(
-            push_160b_hash(&Ripemd160::digest(Sha256::digest(pk)).into()),
+            pv::push_160b_hash(&Ripemd160::digest(Sha256::digest(pk)).into()),
             true,
         )[..],
         &[op::CHECKSIG],
@@ -255,7 +233,7 @@ pub fn pay_to_script_hash<T: Into<opcode::PossiblyBad> + opcode::Evaluable + Clo
     [
         &[op::HASH160],
         &equals(
-            push_160b_hash(&Ripemd160::digest(Sha256::digest(redeem_script.to_bytes())).into()),
+            pv::push_160b_hash(&Ripemd160::digest(Sha256::digest(redeem_script.to_bytes())).into()),
             false,
         )[..],
     ]
@@ -340,7 +318,7 @@ pub fn hash160_htlc(
         .concat(),
         &[
             &[op::HASH160],
-            &equals(push_160b_hash(recipient_hash), true)[..],
+            &equals(pv::push_160b_hash(recipient_hash), true)[..],
             &check_sig(recipient_pk, false)?[..],
         ]
         .concat(),
@@ -368,7 +346,7 @@ pub fn hash160_htlc_size_check(
         &[
             &size_check(20)[..],
             &[op::HASH160],
-            &equals(push_160b_hash(recipient_hash), true)[..],
+            &equals(pv::push_160b_hash(recipient_hash), true)[..],
             &check_sig(recipient_pk, false)?[..],
         ]
         .concat(),
@@ -391,7 +369,7 @@ pub fn hash160_htlc_p2pkh(
     branch(
         &[
             &[op::HASH160],
-            &equals(push_160b_hash(recipient_hash), true)[..],
+            &equals(pv::push_160b_hash(recipient_hash), true)[..],
             &pay_to_pubkey_hash(recipient_pk)[..],
         ]
         .concat(),
@@ -424,7 +402,7 @@ pub fn sha256_htlc(
         .concat(),
         &[
             &[op::SHA256],
-            &equals(push_256b_hash(recipient_sha), true)[..],
+            &equals(pv::push_256b_hash(recipient_sha), true)[..],
             &check_sig(recipient_pk, false)?[..],
         ]
         .concat(),
@@ -451,7 +429,7 @@ pub fn sha256_htlc_p2pkh(
     branch(
         &[
             &[op::SHA256],
-            &equals(push_256b_hash(recipient_sha), true)[..],
+            &equals(pv::push_256b_hash(recipient_sha), true)[..],
             &pay_to_pubkey_hash(recipient_pk)[..],
         ]
         .concat(),
@@ -480,7 +458,7 @@ pub fn sha256_htlc_size_check(
         &[
             &size_check(20)[..],
             &[op::SHA256],
-            &equals(push_256b_hash(recipient_sha), true)[..],
+            &equals(pv::push_256b_hash(recipient_sha), true)[..],
             &pay_to_pubkey_hash(recipient_pk)[..],
         ]
         .concat(),
@@ -503,7 +481,7 @@ pub fn sha256_htlc_with_unconditional(
     branch(
         &[
             &[op::SHA256],
-            &equals(push_256b_hash(recipient_sha), true)[..],
+            &equals(pv::push_256b_hash(recipient_sha), true)[..],
             &pay_to_pubkey_hash(recipient_pk)[..],
         ]
         .concat(),
@@ -511,7 +489,7 @@ pub fn sha256_htlc_with_unconditional(
             &ignored_value(pv::_1)[..],
             &[op::HASH160],
             &equals(
-                push_160b_hash(&Ripemd160::digest(Sha256::digest(sender_pk)).into()),
+                pv::push_160b_hash(&Ripemd160::digest(Sha256::digest(sender_pk)).into()),
                 true,
             )[..],
             &[op::CHECKSIG],
@@ -539,7 +517,7 @@ pub fn dual_hash160_htlc_size_check(
         Ok([
             &size_check(20)[..],
             &[op::HASH160],
-            &equals(push_160b_hash(hash), true)[..],
+            &equals(pv::push_160b_hash(hash), true)[..],
             &check_sig(pk, false)?[..],
         ]
         .concat())

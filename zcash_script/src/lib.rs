@@ -205,7 +205,7 @@ pub mod testing {
 
     use crate::{
         interpreter,
-        pattern::{check_multisig, pay_to_script_hash, push_num, push_script},
+        pattern::{check_multisig, pay_to_script_hash},
         pv,
         script::{self, Evaluable},
         signature::HashType,
@@ -242,10 +242,10 @@ pub mod testing {
         pub static ref SCRIPT_PUBKEY: script::PubKey = script::Component(pay_to_script_hash(&REDEEM_SCRIPT));
         /// The scriptSig used for the static test case.
         pub static ref SCRIPT_SIG: script::Sig = script::Component(vec![
-            push_num(0),
+            pv::push_num(0),
             pv::push_value(&<[u8; 0x48]>::from_hex("3045022100d2ab3e6258fe244fa442cfb38f6cef9ac9a18c54e70b2f508e83fa87e20d040502200eead947521de943831d07a350e45af8e36c2166984a8636f0a8811ff03ed09401").expect("valid sig")).expect("fits into a PushValue"),
             pv::push_value(&<[u8; 0x47]>::from_hex("3044022013e15d865010c257eef133064ef69a780b4bc7ebe6eda367504e806614f940c3022062fdbc8c2d049f91db2042d6c9771de6f1ef0b3b1fea76c1ab5542e44ed29ed801").expect("valid sig")).expect("fits into a PushValue"),
-            push_script(&REDEEM_SCRIPT).expect("fits into a PushValue"),
+            pv::push_script(&REDEEM_SCRIPT).expect("fits into a PushValue"),
         ]);
         /// The combined script used for the static test case.
         pub static ref SCRIPT: script::Raw =

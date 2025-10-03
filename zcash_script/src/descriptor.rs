@@ -194,7 +194,7 @@ pub fn sh(script: &script::Redeem) -> script::PubKey {
     let script_hash = Ripemd160::digest(Sha256::digest(script.to_bytes()));
     script::Component(vec![
         op::HASH160,
-        Opcode::from(pattern::push_160b_hash(&script_hash)),
+        op::push_160b_hash(&script_hash),
         op::EQUAL,
     ])
 }
@@ -227,8 +227,8 @@ fn multi_inner(k: u8, keys: &[KeyExpression], sorted: bool) -> Result<script::Re
             if k > n {
                 Err(Error::InvalidThreshold(k, n))
             } else {
-                let k = Opcode::from(pattern::push_num(k.into()));
-                let n = Opcode::from(pattern::push_num(n.into()));
+                let k = op::push_num(k.into());
+                let n = op::push_num(n.into());
 
                 let mut keys = keys
                     .iter()

@@ -3,8 +3,8 @@
 #![allow(missing_docs)]
 
 use crate::{
-    opcode::{Control::*, Operation::*},
-    pv,
+    opcode::{self, Control::*, Operation::*},
+    pv, script,
     Opcode::{self, Control, Operation, PushValue},
 };
 
@@ -31,6 +31,35 @@ pub const _16: Opcode = PushValue(pv::_16);
 /// [`opcode::push_value::LargeValue::MAX_SIZE`].
 pub fn push_value(value: &[u8]) -> Option<Opcode> {
     pv::push_value(value).map(PushValue)
+}
+
+/// Produce a minimal `PushValue` that encodes the provided number.
+pub fn push_num(n: i64) -> Opcode {
+    PushValue(pv::push_num(n))
+}
+
+/// Produce a minimal `PushValue` that encodes the provided script. This is particularly useful with
+/// P2SH.
+pub fn push_script<T: Into<opcode::PossiblyBad> + opcode::Evaluable + Clone>(
+    script: &script::Component<T>,
+) -> Option<Opcode> {
+    pv::push_script(script).map(PushValue)
+}
+
+/// Creates a `PushValue` from a 20-byte value (basically, RipeMD160 and other hashes).
+///
+/// __TODO__: Once const_generic_exprs lands, this should become `push_array<N>(a: &[u8; N])` with
+///           `N` bounded by [`opcode::push_value::LargeValue::MAX_SIZE`].
+pub fn push_160b_hash(hash: &[u8; 20]) -> Opcode {
+    PushValue(pv::push_160b_hash(hash))
+}
+
+/// Creates a `PushValue` from a 32-byte value (basically, SHA-256 and other hashes).
+///
+/// __TODO__: Once const_generic_exprs lands, this should become `push_array<N>(a: &[u8; N])` with
+///           `N` bounded by [`opcode::push_value::LargeValue::MAX_SIZE`].
+pub fn push_256b_hash(hash: &[u8; 32]) -> Opcode {
+    PushValue(pv::push_256b_hash(hash))
 }
 
 pub const NOP: Opcode = Operation(OP_NOP);
