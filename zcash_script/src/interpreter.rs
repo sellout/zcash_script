@@ -231,16 +231,10 @@ pub struct CallbackTransactionSignatureChecker<'a> {
 /// Treat a stack entry as a generalized boolean. Anything other than 0 and -0 (minimal encoding not
 /// required) is treated as `true`.
 pub(crate) fn cast_to_bool(vch: &[u8]) -> bool {
-    for i in 0..vch.len() {
-        if vch[i] != 0 {
-            // Can be negative zero
-            if i == vch.len() - 1 && vch[i] == 0x80 {
-                return false;
-            }
-            return true;
-        }
-    }
-    false
+    vch.split_last()
+        // Can be negative zero
+        .map(|(last, init)| init.iter().any(|i| *i != 0) || *last != 0 && *last != 0x80)
+        .unwrap_or(false)
 }
 
 /// Script is a stack machine (like Forth) that evaluates a predicate returning a bool indicating
