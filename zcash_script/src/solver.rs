@@ -52,11 +52,7 @@ pub fn standard(script_code: &script::Component<Opcode>) -> Option<ScriptKind> {
 
         // Legacy Pay-to-Public-Key (P2PK), which only occurred in early Zcash coinbase outputs.
         [Opcode::PushValue(PushValue::LargeValue(PushdataBytelength(v))), op::CHECKSIG] => {
-            (v.len() == PubKey::SIZE || v.len() == PubKey::COMPRESSED_SIZE).then(|| {
-                ScriptKind::PubKey {
-                    data: v.clone().to_vec().try_into().expect("bounds checked"),
-                }
-            })
+            valid_size_pubkey(v.as_slice()).map(|data| ScriptKind::PubKey { data })
         }
 
         // Pay-to-Multi-Signature (P2MS)
@@ -68,18 +64,7 @@ pub fn standard(script_code: &script::Component<Opcode>) -> Option<ScriptKind> {
                     let pubkeys = pubkeys
                         .iter()
                         .map(|op| match op {
-                            Opcode::PushValue(data) => {
-                                let pubkey_bytes = data.value();
-                                // Equivalent to `CPubKey::GetLen`
-                                let expected_len = match pubkey_bytes.first() {
-                                    Some(2 | 3) => Some(PubKey::COMPRESSED_SIZE),
-                                    Some(4 | 6 | 7) => Some(PubKey::SIZE),
-                                    _ => None,
-                                };
-                                // Equivalent to `CPubKey::ValidSize`
-                                (expected_len == Some(pubkey_bytes.len()))
-                                    .then(|| pubkey_bytes.try_into().expect("bounds checked"))
-                            }
+                            Opcode::PushValue(data) => valid_size_pubkey(&data.value()),
                             _ => None,
                         })
                         .collect::<Option<Vec<_>>>();
@@ -98,6 +83,22 @@ pub fn standard(script_code: &script::Component<Opcode>) -> Option<ScriptKind> {
         // Non-standard
         _ => None,
     }
+}
+
+/// Returns the bytes as a public key if their length is the one their first byte calls for.
+///
+/// Equivalent to zcashd's `CPubKey::ValidSize`, which `Solver` applies to the keys of both P2PK
+/// and multisig scripts.
+fn valid_size_pubkey(
+    bytes: &[u8],
+) -> Option<BoundedVec<u8, { PubKey::COMPRESSED_SIZE }, { PubKey::SIZE }>> {
+    // Equivalent to `CPubKey::GetLen`
+    let expected_len = match bytes.first() {
+        Some(2 | 3) => Some(PubKey::COMPRESSED_SIZE),
+        Some(4 | 6 | 7) => Some(PubKey::SIZE),
+        _ => None,
+    };
+    (expected_len == Some(bytes.len())).then(|| bytes.to_vec().try_into().expect("bounds checked"))
 }
 
 /// Known kinds of standard scripts.
@@ -157,6 +158,47 @@ impl ScriptKind {
             //       fix after https://github.com/zcash/wallet/issues/236
             ScriptKind::NullData { .. } => 0,
             ScriptKind::PubKey { .. } => 1,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use super::standard;
+    use crate::script;
+
+    fn kind(bytes: Vec<u8>) -> Option<&'static str> {
+        standard(&script::PubKey::parse(&script::Code(bytes)).expect("parses"))
+            .map(|kind| kind.as_str())
+    }
+
+    /// `<key> OP_CHECKSIG`, with a key of `len` bytes that starts with `prefix`.
+    fn p2pk(prefix: u8, len: usize) -> Vec<u8> {
+        let len_byte = u8::try_from(len).expect("a direct push");
+        [&[len_byte, prefix][..], &vec![0x11; len - 1], &[0xac]].concat()
+    }
+
+    /// Like zcashd's `MatchPayToPubkey`, which requires `CPubKey::ValidSize`.
+    #[test]
+    fn p2pk_requires_a_key_prefix_matching_its_length() {
+        for (prefix, len) in [(0x02, 33), (0x03, 33), (0x04, 65), (0x06, 65), (0x07, 65)] {
+            assert_eq!(
+                kind(p2pk(prefix, len)),
+                Some("pubkey"),
+                "{prefix:#04x}, {len}"
+            );
+        }
+        for (prefix, len) in [
+            (0x00, 33),
+            (0x04, 33),
+            (0x05, 33),
+            (0x02, 65),
+            (0x03, 65),
+            (0x00, 65),
+        ] {
+            assert_eq!(kind(p2pk(prefix, len)), None, "{prefix:#04x}, {len}");
         }
     }
 }
