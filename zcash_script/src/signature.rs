@@ -379,9 +379,16 @@ impl Decoded {
                 match validated {
                     Err(e) => Validity::InvalidAbort(e),
                     Ok(hash_type) => match ecdsa::Signature::from_der(vch_sig) {
-                        // Failures of `ecdsa::Signature::from_der that aren’t covered by
-                        // `is_valid_encoding` shouldn’t abort execution.`
-                        Err(_) => Validity::InvalidContinue,
+                        // `is_valid_encoding` accepts everything secp256k1 parses, so this can’t
+                        // currently happen. If it did, zcashd would fail its low-S check, which
+                        // also parses the signature, and otherwise just fail to verify it.
+                        Err(_) => {
+                            if require_low_s {
+                                Validity::InvalidAbort(Error::SigHighS)
+                            } else {
+                                Validity::InvalidContinue
+                            }
+                        }
                         Ok(sig) => {
                             if require_low_s && !PubKey::check_low_s(&sig) {
                                 Validity::InvalidAbort(Error::SigHighS)
