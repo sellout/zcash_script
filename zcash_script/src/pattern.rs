@@ -119,10 +119,13 @@ pub fn push_pubkey(pubkey: &[u8]) -> Result<Opcode, Error> {
 
 /// Performs a `sig_count`-of-`pks.len()` multisig.
 ///
+/// `OP_CHECKMULTISIG` also consumes one value below the signatures, which must be empty under
+/// [`crate::interpreter::Flags::NullDummy`].
+///
 /// if `verify`
-///   type: `sig_count*Signature -> 💥?`
+///   type: `[_] + sig_count*Signature -> 💥?`
 /// else
-///   type: `sig_count*Signature -> [Bool]`
+///   type: `[_] + sig_count*Signature -> [Bool]`
 pub fn check_multisig(sig_count: u8, pks: &[&[u8]], verify: bool) -> Result<Vec<Opcode>, Error> {
     Ok([
         &[PushValue(push_num(sig_count.into()))],
@@ -267,7 +270,7 @@ pub fn pay_to_script_hash<T: Into<opcode::PossiblyBad> + opcode::Evaluable + Clo
 /// label: 2-of-3 multisig with compressed pubkeys, a 4-byte ignored data value, and an empty stack
 ///   check
 ///
-/// type: `n*Signature -> [Bool] ∪  💥`
+/// type: `[_] + n*Signature -> [Bool] ∪  💥`
 pub fn check_multisig_empty(
     n: u8,
     x: &[&[u8]],
@@ -285,7 +288,9 @@ pub fn check_multisig_empty(
 ///
 /// 1-of-3 and 2-of-2 combined multisig with compressed pubkeys
 ///
-/// type: `m*Signature + n*Signature -> (m*Signature + 💥) ∪ [Bool]`
+/// The `m` signatures are checked first, so they are on top of the stack.
+///
+/// type: `[_] + n*Signature + [_] + m*Signature -> (m*Signature + 💥) ∪ [Bool]`
 pub fn combined_multisig(m: u8, x: &[&[u8]], n: u8, y: &[&[u8]]) -> Result<Vec<Opcode>, Error> {
     Ok([
         &check_multisig(m, x, true)?[..],
@@ -437,7 +442,7 @@ pub fn sha256_htlc(
 /// - SHA-256 HTLC (2-byte CLTV)
 /// - SHA-256 HTLC (3-byte CLTV)
 ///
-/// type: `[Signature, _?, Bool] -> ([Signature, lt?] + 💥) ∪ [Bool]`
+/// type: `[Signature, PubKey, _?, Bool] -> ([Signature, lt?] + 💥) ∪ [Bool]`
 ///
 /// dependent type:
 /// - `[Signature, PubKey, _, True] -> ([Signature] + 💥) ∪ [Bool]`
@@ -465,11 +470,11 @@ pub fn sha256_htlc_p2pkh(
 
 /// SHA-256 HTLC with size check
 ///
-/// type: `[Signature, a?, Bool] -> ([Signature, lt ∪ a?] + 💥) ∪ [Bool]`
+/// type: `[Signature, PubKey, a?, Bool] -> ([Signature, lt ∪ a?] + 💥) ∪ [Bool]`
 ///
 /// dependent type:
-/// - `[Signature, a, True] -> ([Signature, a?] + 💥) ∪ [Bool]`
-/// - `[Signature, False] -> ([Signature, lt] + 💥) ∪ [Bool]`
+/// - `[Signature, PubKey, a, True] -> ([Signature, a?] + 💥) ∪ [Bool]`
+/// - `[Signature, PubKey, False] -> ([Signature, lt] + 💥) ∪ [Bool]`
 pub fn sha256_htlc_size_check(
     lt: u32,
     sender_pk: &[u8],
