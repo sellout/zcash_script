@@ -241,10 +241,10 @@ pub mod testing {
     /// Ensures that flags represent a supported state. This avoids crashes in the C++ code, which
     /// break various tests.
     pub fn repair_flags(flags: interpreter::Flags) -> interpreter::Flags {
-        // TODO: The C++ implementation fails an assert (interpreter.cpp:1097) if `CleanStack` is
-        //       set without `P2SH`.
+        // The C++ `VerifyScript` fails an assert if `CleanStack` is set without `P2SH`, so add
+        // `P2SH` rather than dropping `CleanStack`.
         if flags.contains(interpreter::Flags::CleanStack) {
-            flags & interpreter::Flags::P2SH
+            flags | interpreter::Flags::P2SH
         } else {
             flags
         }
@@ -426,6 +426,19 @@ mod tests {
         for (suffix, expected_suffix) in sighash_cases.iter() {
             check_sig_display(der_sig, pubkey, suffix, expected_suffix);
         }
+    }
+
+    #[test]
+    fn repair_flags_keeps_clean_stack() {
+        use crate::{interpreter::Flags, testing::repair_flags};
+
+        // `CleanStack` requires `P2SH`, so it gets added, and every other flag is kept.
+        assert_eq!(
+            repair_flags(Flags::CleanStack | Flags::MinimalData),
+            Flags::CleanStack | Flags::MinimalData | Flags::P2SH
+        );
+        assert_eq!(repair_flags(Flags::MinimalData), Flags::MinimalData);
+        assert_eq!(repair_flags(Flags::all()), Flags::all());
     }
 
     #[test]

@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with 4 to 7 compressed keys) and dropped or shortened the length of empty pushes, `OP_PUSHDATA2`
   pushes under 128 bytes, and all `OP_PUSHDATA4` pushes.
 - `sig_op_count()` now counts past pushes of more than 520 bytes, as zcashd does.
+- `testing::repair_flags` now adds `P2SH` when `CleanStack` is set, instead of dropping every flag
+  but `P2SH`.
 
 ### Security
 
