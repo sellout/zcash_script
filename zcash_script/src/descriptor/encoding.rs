@@ -92,7 +92,13 @@ impl FromStr for Key {
     type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Ok(key) = s.parse() {
+        // BIP 380 allows only compressed and uncompressed hex keys, but secp256k1 also parses
+        // hybrid keys (starting with 06 or 07), and would re-encode one as uncompressed.
+        let is_hex_key = matches!(
+            (s.len(), s.get(..2)),
+            (66, Some("02" | "03")) | (130, Some("04"))
+        );
+        if let Some(key) = is_hex_key.then(|| s.parse().ok()).flatten() {
             // Hex-encoded pubkey bytes.
             Ok(Key::Public {
                 key,
@@ -287,6 +293,20 @@ mod tests {
             assert!(
                 s.parse::<KeyExpression>().is_err(),
                 "allowed invalid key expression {s}",
+            );
+        }
+    }
+
+    /// BIP 380 allows only compressed (`02`, `03`) and uncompressed (`04`) hex public keys.
+    #[test]
+    fn rejects_hybrid_public_keys() {
+        const UNCOMPRESSED: &str = "04a34b99f22c790c4e36b2b3c2c35a36db06226e41c692fc82b8b56ac1c540c5bd5b8dec5235a0fa8722476c7709c02559e3aa73aa03918ba2d492eea75abea235";
+        assert!(UNCOMPRESSED.parse::<KeyExpression>().is_ok());
+        for prefix in ["06", "07"] {
+            let hybrid = [prefix, &UNCOMPRESSED[2..]].concat();
+            assert!(
+                hybrid.parse::<KeyExpression>().is_err(),
+                "allowed hybrid key {hybrid}"
             );
         }
     }
