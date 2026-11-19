@@ -80,6 +80,8 @@ zcash_script = { path = "../zcash_script", features = ["test-dependencies"] }
 hex.workspace = true
 lazy_static.workspace = true
 proptest.workspace = true
+ripemd.workspace = true
+sha2.workspace = true
 
 [target.'cfg(linux)'.dev-dependencies]
 libfuzzer-sys.workspace = true

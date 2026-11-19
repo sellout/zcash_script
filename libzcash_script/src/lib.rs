@@ -379,15 +379,19 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
-    use alloc::format;
+    use alloc::{format, vec, vec::Vec};
 
-    use proptest::prelude::{prop, prop_assert_eq, proptest, ProptestConfig};
+    use proptest::prelude::{
+        any, prop, prop_assert_eq, prop_oneof, proptest, Just, ProptestConfig, Strategy,
+    };
+    use ripemd::Ripemd160;
+    use sha2::{Digest, Sha256};
     use zcash_script::{
         interpreter, script,
         test_vectors::test_vectors,
         testing::{
             self, invalid_sighash, missing_sighash, repair_flags, sighash, OVERFLOW_SCRIPT_SIZE,
-            SCRIPT,
+            REDEEM_SCRIPT, SCRIPT, SCRIPT_SIG,
         },
         Script,
     };
@@ -396,6 +400,7 @@ mod tests {
         testing::{check_verify_callback, normalize_err},
         CxxInterpreter, Error, RustInterpreter, ZcashScript,
     };
+    use zcash_script::{opcode, script::Evaluable as _, Opcode};
 
     #[test]
     fn it_works_in_cxx() {
@@ -557,6 +562,154 @@ mod tests {
         }
     }
 
+    /// The minimal push of `data`, as it appears in a script.
+    fn push(data: &[u8]) -> Vec<u8> {
+        let len = data.len();
+        let prefix = match u8::try_from(len) {
+            Ok(n @ 0..0x4c) => vec![n],
+            Ok(n) => vec![0x4c, n],
+            Err(_) => match u16::try_from(len) {
+                Ok(n) => [&[0x4d][..], &n.to_le_bytes()].concat(),
+                Err(_) => {
+                    let n = u32::try_from(len).expect("test pushes fit in a u32");
+                    [&[0x4e][..], &n.to_le_bytes()].concat()
+                }
+            },
+        };
+        [&prefix[..], data].concat()
+    }
+
+    /// The P2SH script pubkey for `redeem`.
+    fn p2sh(redeem: &[u8]) -> Vec<u8> {
+        [
+            &[0xa9, 0x14][..],
+            &Ripemd160::digest(Sha256::digest(redeem)),
+            &[0x87],
+        ]
+        .concat()
+    }
+
+    /// The signatures and public keys of the static test case, which `sighash` makes valid, so that
+    /// generated scripts sometimes pass `OP_CHECKSIG` and `OP_CHECKMULTISIG`.
+    fn keys_and_signatures() -> Vec<Vec<u8>> {
+        let pushes = |code: script::Code, lens: core::ops::RangeInclusive<usize>| {
+            code.parse()
+                .filter_map(|op| match op {
+                    Ok(opcode::PossiblyBad::Good(Opcode::PushValue(pv))) => Some(pv.value()),
+                    _ => None,
+                })
+                .filter(move |v| lens.contains(&v.len()))
+                .collect::<Vec<_>>()
+        };
+        [
+            pushes(script::Code(SCRIPT_SIG.to_bytes()), 71..=73),
+            pushes(script::Code(REDEEM_SCRIPT.to_bytes()), 33..=33),
+        ]
+        .concat()
+    }
+
+    /// A single push, biased toward values the interpreter treats specially: small numbers,
+    /// boundary script numbers, non-minimal encodings, real keys and signatures, and pushes at the
+    /// 520-byte limit.
+    fn element() -> impl Strategy<Value = Vec<u8>> {
+        prop_oneof![
+            4 => (0x00..=0x60u8).prop_map(|op| vec![op]).boxed(),
+            2 => prop::collection::vec(any::<u8>(), 1..=5).prop_map(|v| push(&v)).boxed(),
+            2 => prop::sample::select(vec![
+                vec![0x01, 0x00],
+                vec![0x01, 0x80],
+                vec![0x01, 0x81],
+                vec![0x02, 0x00, 0x80],
+                vec![0x02, 0x80, 0x00],
+                vec![0x04, 0xff, 0xff, 0xff, 0x7f],
+                vec![0x05, 0xff, 0xff, 0xff, 0xff, 0x00],
+                vec![0x05, 0xff, 0xff, 0xff, 0xff, 0x80],
+                vec![0x4c, 0x00],
+                vec![0x4c, 0x01, 0x05],
+            ])
+            .boxed(),
+            2 => prop::sample::select(keys_and_signatures()).prop_map(|v| push(&v)).boxed(),
+            1 => prop::sample::select(vec![519, 520, 521])
+                .prop_map(|len| push(&vec![0; len]))
+                .boxed(),
+        ]
+    }
+
+    /// A single opcode that isn't a push. Disabled opcodes are rare, because any one of them fails
+    /// the whole script.
+    fn operation() -> impl Strategy<Value = Vec<u8>> {
+        prop_oneof![
+            200 => (0x61..=0xbau8)
+                .prop_filter("not disabled", |op| {
+                    !matches!(op, 0x7e..=0x81 | 0x83..=0x86 | 0x8d | 0x8e | 0x95..=0x99 | 0xab)
+                })
+                .prop_map(|op| vec![op]),
+            1 => prop::sample::select(vec![0x7e, 0x95, 0xab, 0xff]).prop_map(|op| vec![op]),
+        ]
+    }
+
+    /// A script of up to `max` elements, which are all pushes if `push_only`.
+    fn structured_script(push_only: bool, max: usize) -> impl Strategy<Value = Vec<u8>> {
+        let token = if push_only {
+            element().boxed()
+        } else {
+            prop_oneof![1 => element(), 2 => operation()].boxed()
+        };
+        prop::collection::vec(token, 0..max).prop_map(|tokens| tokens.concat())
+    }
+
+    /// A P2SH spend of the static test case's 2-of-3 multisig redeem script, wrapped in generated
+    /// opcodes, with its signatures in a generated order after generated pushes.
+    fn multisig_spend() -> impl Strategy<Value = (Vec<u8>, Vec<u8>)> {
+        let signatures = keys_and_signatures()
+            .into_iter()
+            .filter(|v| v.len() > 33)
+            .collect::<Vec<_>>();
+        (
+            structured_script(true, 3),
+            prop::collection::vec(prop::sample::select(signatures), 0..=3),
+            structured_script(false, 3),
+            structured_script(false, 3),
+        )
+            .prop_map(|(junk, sigs, before, after)| {
+                let redeem = [before, REDEEM_SCRIPT.to_bytes(), after].concat();
+                let sig = [
+                    junk,
+                    vec![0x00],
+                    sigs.iter().flat_map(|sig| push(sig)).collect(),
+                    push(&redeem),
+                ]
+                .concat();
+                (sig, p2sh(&redeem))
+            })
+    }
+
+    /// A script sig and script pubkey. Most are P2SH spends, which random bytes essentially never
+    /// produce, and some of those spend a real multisig script, so that signature checks succeed.
+    fn structured_spend() -> impl Strategy<Value = (Vec<u8>, Vec<u8>)> {
+        prop_oneof![
+            2 => multisig_spend(),
+            2 => (
+                any::<bool>().prop_flat_map(|push_only| structured_script(push_only, 12)),
+                structured_script(false, 16),
+            ),
+            4 => (
+                prop::bool::weighted(0.875).prop_flat_map(|push_only| structured_script(push_only, 8)),
+                structured_script(false, 14),
+            )
+                .prop_map(|(sig, redeem)| ([sig, push(&redeem)].concat(), p2sh(&redeem))),
+        ]
+    }
+
+    /// Flags as `repair_flags` makes them, with a third being the consensus flags.
+    fn structured_flags() -> impl Strategy<Value = interpreter::Flags> {
+        prop_oneof![
+            2 => prop::bits::u32::masked(interpreter::Flags::all().bits())
+                .prop_map(|bits| repair_flags(interpreter::Flags::from_bits_truncate(bits))),
+            1 => Just(interpreter::Flags::P2SH | interpreter::Flags::CHECKLOCKTIMEVERIFY),
+        ]
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig {
             cases: 20_000, .. ProptestConfig::default()
@@ -684,6 +837,42 @@ mod tests {
                 ret.0.map_err(normalize_err),
                 ret.1.clone().map_err(normalize_err),
                 "original Rust result: {:?}", ret.1);
+        }
+
+        /// Like `test_arbitrary_scripts`, but generates scripts from opcodes rather than bytes, so
+        /// that more of them get far enough to exercise the interpreter: P2SH spends, valid
+        /// signatures, boundary numbers, and pushes at the size limit.
+        #[test]
+        fn test_structured_scripts(
+            lock_time in prop::sample::select(vec![0, 100, 499_999_999, 500_000_000, u32::MAX]),
+            is_final in any::<bool>(),
+            (sig, pub_key) in structured_spend(),
+            flags in structured_flags(),
+        ) {
+            let script = script::Raw::from_raw_parts(sig, pub_key);
+            let ret = check_verify_callback(
+                &CxxInterpreter {
+                    sighash: &sighash,
+                    lock_time,
+                    is_final,
+                },
+                &RustInterpreter::new(
+                    interpreter::CallbackTransactionSignatureChecker {
+                        sighash: &sighash,
+                        lock_time: lock_time.into(),
+                        is_final,
+                    },
+                ),
+                &script,
+                flags,
+            );
+            prop_assert_eq!(
+                ret.0.map_err(normalize_err),
+                ret.1.clone().map_err(normalize_err),
+                "\n• original Rust result: {:?}\n• parsed script: {:?}",
+                ret.1,
+                script.annotate(&flags),
+            );
         }
     }
 }
