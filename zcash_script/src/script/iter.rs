@@ -62,9 +62,14 @@ pub fn eval_script<T: script::Evaluable, U: script::Evaluable>(
                         // non-P2SH evaluation of a P2SH script will obviously not result in a clean stack
                         // (the P2SH inputs remain).
                         if flags.contains(interpreter::Flags::CleanStack) {
-                            // Disallow CLEANSTACK without P2SH, because Bitcoin did.
-                            assert!(flags.contains(interpreter::Flags::P2SH));
-                            if result_stack.len() == 1 {
+                            // Disallow CLEANSTACK without P2SH, because Bitcoin did. zcashd
+                            // asserts here instead.
+                            if !flags.contains(interpreter::Flags::P2SH) {
+                                Err((
+                                    script::ComponentType::Redeem,
+                                    script::Error::CleanStackWithoutP2SH,
+                                ))
+                            } else if result_stack.len() == 1 {
                                 Ok(true)
                             } else {
                                 Err((script::ComponentType::Redeem, script::Error::CleanStack))

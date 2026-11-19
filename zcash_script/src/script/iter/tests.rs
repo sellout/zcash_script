@@ -1,6 +1,9 @@
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
-use crate::script::Code;
+use crate::{
+    interpreter::{Flags, NullSignatureChecker},
+    script::{self, Code},
+};
 
 /// `sig_op_count` must match zcashd's `CScript::GetSigOpCount` even when the script contains
 /// opcodes this crate buckets under `Disabled` -- in particular OP_CODESEPARATOR (0xab), which
@@ -38,4 +41,22 @@ fn does_not_stop_at_pushes_over_520_bytes() {
     s.extend([0xae, 0x51, 0xae]);
     assert_eq!(Code(s.clone()).sig_op_count(true), 21);
     assert_eq!(Code(s).sig_op_count(false), 40);
+}
+
+/// zcashd asserts that `P2SH` is set with `CleanStack`, so this is an error rather than a result to
+/// match.
+#[test]
+fn clean_stack_requires_p2sh() {
+    let script = script::Raw::from_raw_parts(vec![0x51], vec![]);
+    assert_eq!(
+        script.eval(Flags::CleanStack, &NullSignatureChecker()),
+        Err((
+            script::ComponentType::Redeem,
+            script::Error::CleanStackWithoutP2SH
+        ))
+    );
+    assert_eq!(
+        script.eval(Flags::CleanStack | Flags::P2SH, &NullSignatureChecker()),
+        Ok(true)
+    );
 }

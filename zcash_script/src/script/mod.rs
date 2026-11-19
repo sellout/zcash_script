@@ -53,6 +53,11 @@ pub enum Error {
 
     #[error("clean stack requirement not met")]
     CleanStack,
+
+    /// [`interpreter::Flags::CleanStack`] was set without [`interpreter::Flags::P2SH`], which
+    /// isn’t supported.
+    #[error("CleanStack requires P2SH")]
+    CleanStackWithoutP2SH,
 }
 
 impl Error {

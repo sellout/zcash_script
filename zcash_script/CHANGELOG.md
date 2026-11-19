@@ -12,11 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `zcash_script::opcode::push_value::LargeValue::MAX_SIZE` is now public, so
   downstream crates can use it instead of duplicating the value.
+- `script::Error::CleanStackWithoutP2SH`
 
 ### Changed
 
 - Building a push value from more than 520 bytes fails before copying the data, instead of copying it
   once for each push opcode it tries. The result is unchanged.
+- Evaluating a script with `interpreter::Flags::CleanStack` but not `interpreter::Flags::P2SH` now
+  returns `script::Error::CleanStackWithoutP2SH` instead of panicking. zcashd asserts in this case.
 
 ### Fixed
 
