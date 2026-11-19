@@ -12,11 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `zcash_script::opcode::push_value::LargeValue::MAX_SIZE` is now public, so
   downstream crates can use it instead of duplicating the value.
+- `impl Asm for opcode::Bad` and `impl Asm for opcode::Disabled`
 
 ### Changed
 
 - Building a push value from more than 520 bytes fails before copying the data, instead of copying it
   once for each push opcode it tries. The result is unchanged.
+- `script::Code::to_asm` now matches zcashd’s `ScriptToAsmStr` on scripts with opcodes that fail if
+  evaluated. It names bad and disabled opcodes and prints pushes of more than 520 bytes as hex,
+  where it used to print `[error]` and stop. It still ends with `[error]` at a truncated push.
+- Signatures in ASM are printed as they were pushed, as zcashd prints them, rather than re-encoded.
+  The two differ when R or S is out of range.
 
 ### Fixed
 

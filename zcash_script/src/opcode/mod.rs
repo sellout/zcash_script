@@ -1416,6 +1416,48 @@ impl Disabled {
     }
 }
 
+impl Asm for Bad {
+    /// The name zcashd’s `GetOpName` gives the opcode.
+    fn to_asm(&self, _attempt_sighash_decode: bool) -> String {
+        match self {
+            Bad::OP_RESERVED => "OP_RESERVED",
+            Bad::OP_VER => "OP_VER",
+            Bad::OP_VERIF => "OP_VERIF",
+            Bad::OP_VERNOTIF => "OP_VERNOTIF",
+            Bad::OP_RESERVED1 => "OP_RESERVED1",
+            Bad::OP_RESERVED2 => "OP_RESERVED2",
+            Bad::Unknown(0xff) => "OP_INVALIDOPCODE",
+            Bad::Unknown(_) => "OP_UNKNOWN",
+        }
+        .into()
+    }
+}
+
+impl Asm for Disabled {
+    /// The name zcashd’s `GetOpName` gives the opcode.
+    fn to_asm(&self, _attempt_sighash_decode: bool) -> String {
+        match self {
+            Disabled::OP_CAT => "OP_CAT",
+            Disabled::OP_SUBSTR => "OP_SUBSTR",
+            Disabled::OP_LEFT => "OP_LEFT",
+            Disabled::OP_RIGHT => "OP_RIGHT",
+            Disabled::OP_INVERT => "OP_INVERT",
+            Disabled::OP_AND => "OP_AND",
+            Disabled::OP_OR => "OP_OR",
+            Disabled::OP_XOR => "OP_XOR",
+            Disabled::OP_2MUL => "OP_2MUL",
+            Disabled::OP_2DIV => "OP_2DIV",
+            Disabled::OP_MUL => "OP_MUL",
+            Disabled::OP_DIV => "OP_DIV",
+            Disabled::OP_MOD => "OP_MOD",
+            Disabled::OP_LSHIFT => "OP_LSHIFT",
+            Disabled::OP_RSHIFT => "OP_RSHIFT",
+            Disabled::OP_CODESEPARATOR => "OP_CODESEPARATOR",
+        }
+        .into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;

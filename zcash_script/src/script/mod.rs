@@ -4,6 +4,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+use core::fmt::Write;
 
 use thiserror::Error;
 
@@ -446,19 +447,35 @@ impl Evaluable for Code {
 }
 
 impl Asm for Code {
+    /// Like zcashd’s `ScriptToAsmStr`, this names every opcode it reads, including ones that fail
+    /// if evaluated, and prints pushes of any size. It ends with `[error]` only at a push that runs
+    /// past the end of the script.
     fn to_asm(&self, attempt_sighash_decode: bool) -> String {
+        let attempt_sighash_decode = attempt_sighash_decode && !self.is_unspendable();
         let mut v = Vec::new();
-        let is_unspendable = self.is_unspendable();
-        for r in self.parse() {
-            match r {
-                Ok(PossiblyBad::Good(op)) => {
-                    v.push(op.to_asm(attempt_sighash_decode && !is_unspendable))
+        let mut script = &self.0[..];
+        while !script.is_empty() {
+            let (r, remainder) = PossiblyBad::parse(script);
+            let read = &script[..script.len() - remainder.len()];
+            script = remainder;
+            v.push(match r {
+                Ok(PossiblyBad::Good(op)) => op.to_asm(attempt_sighash_decode),
+                Ok(PossiblyBad::Bad(op)) => op.to_asm(false),
+                Err(opcode::Error::Disabled(Some(op))) => op.to_asm(false),
+                // A push of more than 520 bytes can’t be evaluated, but it is printed as hex like
+                // any other push of more than 4 bytes. It can’t be a signature, so there is no
+                // sighash type to decode.
+                Err(opcode::Error::PushSize(Some(len))) => {
+                    read[read.len() - len..]
+                        .iter()
+                        .fold(String::new(), |mut hex, byte| {
+                            write!(hex, "{byte:02x}").expect("writing to a `String` can’t fail");
+                            hex
+                        })
                 }
-                Ok(PossiblyBad::Bad(_)) | Err(_) => {
-                    v.push("[error]".to_string());
-                    break;
-                }
-            }
+                // A truncated push consumes the rest of the script.
+                Err(_) => "[error]".to_string(),
+            });
         }
         v.join(" ")
     }
@@ -516,5 +533,55 @@ impl Asm for Raw {
 impl core::fmt::Display for Raw {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.to_asm(true))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{string::String, vec::Vec};
+
+    use super::{Asm, Code};
+
+    /// The expected strings are what zcashd’s `ScriptToAsmStr` produces.
+    #[test]
+    fn to_asm_matches_zcashd_on_opcodes_that_fail() {
+        let asm = |bytes: &[u8]| Code(bytes.to_vec()).to_asm(false);
+        assert_eq!(asm(&[0x50, 0x51]), "OP_RESERVED 1");
+        assert_eq!(asm(&[0x62, 0x65, 0x66]), "OP_VER OP_VERIF OP_VERNOTIF");
+        assert_eq!(
+            asm(&[0x51, 0x89, 0x8a, 0x51]),
+            "1 OP_RESERVED1 OP_RESERVED2 1"
+        );
+        assert_eq!(asm(&[0x7e, 0x51]), "OP_CAT 1");
+        assert_eq!(asm(&[0xab, 0x51]), "OP_CODESEPARATOR 1");
+        assert_eq!(asm(&[0xba, 0xfe, 0x51]), "OP_UNKNOWN OP_UNKNOWN 1");
+        assert_eq!(asm(&[0xff]), "OP_INVALIDOPCODE");
+
+        // A push of more than 520 bytes prints as hex.
+        let oversized: Vec<u8> = [&[0x4d, 0x09, 0x02][..], &[0xab; 521], &[0x51]].concat();
+        assert_eq!(
+            asm(&oversized),
+            ["ab".repeat(521), String::from(" 1")].concat()
+        );
+
+        // Only a truncated push ends the output.
+        assert_eq!(asm(&[0x51, 0x02, 0x01]), "1 [error]");
+        assert_eq!(asm(&[0x7e, 0x4d, 0x09]), "OP_CAT [error]");
+    }
+
+    /// zcashd prints a signature as it was pushed, followed by its sighash type.
+    #[cfg(feature = "signature-validation")]
+    #[test]
+    fn to_asm_prints_signatures_as_pushed() {
+        // A strict-DER signature whose R is 2^256 - 1, which is larger than the group order, so
+        // secp256k1 parses it as 0 and would re-encode it as `020100`.
+        let sig: Vec<u8> = [
+            &[0x30, 0x26, 0x02, 0x21, 0x00][..],
+            &[0xff; 32],
+            &[0x02, 0x01, 0x01],
+        ]
+        .concat();
+        let push = [&[0x29][..], &sig, &[0x01]].concat();
+        assert_eq!(Code(push).to_asm(true), hex::encode(&sig) + "[ALL]");
     }
 }

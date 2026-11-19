@@ -232,7 +232,9 @@ impl Asm for LargeValue {
             if let signature::Validity::Valid(signature) =
                 signature::Decoded::from_bytes(&value, false, true)
             {
-                value = signature.sig().serialize_der().to_vec();
+                // Like zcashd, print the signature as it was pushed, rather than as secp256k1
+                // re-encodes it, which differs when R or S is out of range.
+                value.pop();
                 hash_type = format!("[{}]", signature.sighash_type().to_asm(false));
             }
         }
