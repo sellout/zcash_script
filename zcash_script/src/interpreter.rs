@@ -451,6 +451,9 @@ pub(crate) const SIGHASH_SIZE: usize = 32;
 ///
 /// The `extern "C"` function that calls this doesn’t give much opportunity for rich failure
 /// reporting, but returning `None` indicates _some_ failure to produce the desired hash.
+///
+/// The interpreter doesn’t reject hash types with undefined bits under the consensus flags, so for
+/// a v5 transaction this must return `None` when [`signature::HashType::raw_bits`] has any set.
 pub type SighashCalculator<'a> =
     &'a dyn Fn(&script::Code, &signature::HashType) -> Option<[u8; SIGHASH_SIZE]>;
 

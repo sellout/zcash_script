@@ -148,6 +148,13 @@ impl HashType {
     ///
     /// For v4 transactions and below, any value for the lower five bits other than 2 & 3 are
     /// treated as SignedOutputs::All.
+    ///
+    /// The interpreter sets `is_strict` from [`crate::interpreter::Flags::StrictEnc`], not from the
+    /// transaction version, so under the consensus flags it accepts undefined bits, as zcashd
+    /// does. Rejecting them in a v5 transaction is up to the
+    /// [`crate::interpreter::SighashCalculator`], which should return `None` for them, using
+    /// [`HashType::raw_bits`]. That makes the signature check fail, rather than aborting the
+    /// script.
     pub fn from_bits(bits: i32, is_strict: bool) -> Result<Self, InvalidHashType> {
         let unknown_bits = (bits | 0x83) ^ 0x83;
         if is_strict && unknown_bits != 0 {
